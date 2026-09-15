@@ -2,7 +2,7 @@ import { useMemo, useState, useEffect } from 'react'
 import { useI18n } from '../i18n'
 import { useAuth } from '../context/AuthContext'
 import { COL, useCollection } from '../lib/db'
-import { seedDemoData } from '../lib/seedData'
+import { clearDemoData, seedDemoData } from '../lib/seedData'
 import {
   DEFAULT_ATTENDANCE_SETTINGS,
   generateAttendanceExcelTemplate,
@@ -99,6 +99,24 @@ export default function Attendance() {
     }
   }
 
+  const [clearing, setClearing] = useState(false)
+
+  // Handle Clear Demo Data
+  async function handleClearDemoData() {
+    if (!canModify) return
+    if (!window.confirm('هل أنت تأكد من حذف كافة البيانات التجريبية نهائياً؟')) return
+    setClearing(true)
+    setSeedMsg('')
+    try {
+      const res = await clearDemoData()
+      setSeedMsg(`تم حذف ${res.deletedCount} سجل تجريبي بنجاح!`)
+    } catch (err) {
+      console.error('Failed to clear demo data:', err)
+    } finally {
+      setClearing(false)
+    }
+  }
+
   // Handle File Upload
   async function handleFileUpload(e) {
     const file = e.target.files?.[0]
@@ -159,9 +177,14 @@ export default function Attendance() {
         action={
           <div className="flex flex-wrap gap-2">
             {canModify && (
-              <Button onClick={handleSeedDemoData} disabled={seeding} variant="secondary">
-                {seeding ? t('attendance.seeding') : t('attendance.seedDemo')}
-              </Button>
+              <>
+                <Button onClick={handleClearDemoData} disabled={clearing || seeding} variant="danger">
+                  {clearing ? 'جاري الحذف...' : 'حذف البيانات التجريبية'}
+                </Button>
+                <Button onClick={handleSeedDemoData} disabled={seeding || clearing} variant="secondary">
+                  {seeding ? t('attendance.seeding') : t('attendance.seedDemo')}
+                </Button>
+              </>
             )}
             <Button onClick={generateAttendanceExcelTemplate} variant="ghost">
               {t('attendance.downloadTemplate')}

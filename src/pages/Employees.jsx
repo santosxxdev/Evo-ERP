@@ -28,7 +28,7 @@ import {
   updateDepartment,
   updatePosition,
 } from '../lib/hr'
-import { seedDemoData } from '../lib/seedData'
+import { clearDemoData, seedDemoData } from '../lib/seedData'
 import { formatDate, formatMoney, monthKey, round2, todayISO, toNumber } from '../lib/format'
 import {
   buildDetailedEmployeeMonthReport,
@@ -398,16 +398,36 @@ export default function Employees() {
     }
   }
 
+  const [clearing, setClearing] = useState(false)
+
+  async function handleClearDemo() {
+    if (!window.confirm('هل أنت تأكد من حذف كافة البيانات التجريبية نهائياً؟')) return
+    setClearing(true)
+    try {
+      await clearDemoData()
+      alert('تم حذف كافة البيانات التجريبية بنجاح!')
+    } catch (err) {
+      console.error('Failed to clear demo data:', err)
+    } finally {
+      setClearing(false)
+    }
+  }
+
   if (loading) return <Loading />
 
   return (
     <div>
       <PageHeader title={t('employees.title')} subtitle={t('employees.subtitle')}>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
           {canModify && (
-            <Button onClick={handleSeedDemo} disabled={seeding} variant="secondary">
-              {seeding ? 'جاري التوليد...' : 'توليد بيانات تجريبية'}
-            </Button>
+            <>
+              <Button onClick={handleClearDemo} disabled={clearing || seeding} variant="danger">
+                {clearing ? 'جاري الحذف...' : 'حذف البيانات التجريبية'}
+              </Button>
+              <Button onClick={handleSeedDemo} disabled={seeding || clearing} variant="secondary">
+                {seeding ? 'جاري التوليد...' : 'توليد بيانات تجريبية'}
+              </Button>
+            </>
           )}
           <Button onClick={() => setEditing({})}>+ {t('employees.add')}</Button>
         </div>

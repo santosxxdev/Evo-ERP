@@ -1,4 +1,4 @@
-import { addDoc, collection, doc, getDocs, setDoc, updateDoc } from 'firebase/firestore'
+import { addDoc, collection, deleteDoc, doc, getDocs, setDoc, updateDoc } from 'firebase/firestore'
 import { db } from './firebase'
 import { COL } from './db'
 
@@ -407,4 +407,39 @@ export async function seedDemoData() {
   }
 
   return result
+}
+
+export async function clearDemoData() {
+  const collectionsToDelete = [
+    'employees',
+    'departments',
+    'positions',
+    'clients',
+    'invoices',
+    'employeeEntries',
+    'attendance',
+    'employeeAllowances',
+    'employeeDeductions',
+    'expenses',
+    'services',
+    'payroll',
+    'payrollRuns',
+    'payrollItems',
+  ]
+
+  let deletedCount = 0
+
+  for (const colName of collectionsToDelete) {
+    try {
+      const snap = await getDocs(collection(db, colName))
+      for (const d of snap.docs) {
+        await deleteDoc(doc(db, colName, d.id))
+        deletedCount++
+      }
+    } catch (err) {
+      console.warn(`Error clearing collection ${colName}:`, err)
+    }
+  }
+
+  return { deletedCount }
 }
