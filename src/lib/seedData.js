@@ -1,4 +1,4 @@
-import { addDoc, collection, doc, getDocs, setDoc } from 'firebase/firestore'
+import { addDoc, collection, doc, getDocs, setDoc, updateDoc } from 'firebase/firestore'
 import { db } from './firebase'
 import { COL } from './db'
 
@@ -12,8 +12,6 @@ export async function seedDemoData() {
     entriesCreated: 0,
     servicesCreated: 0,
     expensesCreated: 0,
-    campaignsCreated: 0,
-    quotationsCreated: 0,
     attendanceRecordsCreated: 0,
     allowancesCreated: 0,
     deductionsCreated: 0,
@@ -41,9 +39,9 @@ export async function seedDemoData() {
       result.departmentsCreated++
     }
   } else {
-    deptSnap.docs.forEach((doc) => {
-      const data = doc.data()
-      if (data.code) deptsMap[data.code] = doc.id
+    deptSnap.docs.forEach((d) => {
+      const data = d.data()
+      if (data.code) deptsMap[data.code] = d.id
     })
   }
 
@@ -60,7 +58,7 @@ export async function seedDemoData() {
       { name: 'مدير مبيعات وتطوير أعمال', code: 'SAL-DIR', departmentId: deptsMap['SAL'] || null, description: 'إدارة إستراتيجية المبيعات والعملاء', active: true },
       { name: 'مسؤول مبيعات وتنفيذ', code: 'SAL-REP', departmentId: deptsMap['SAL'] || null, description: 'إدارة العروض المباشرة والمبيعات', active: true },
       { name: 'مهندس برمجيات أول (Senior Developer)', code: 'IT-SR', departmentId: deptsMap['IT'] || null, description: 'تطوير النواة الهندسية للنظام', active: true },
-      { name: 'مطور واجهات ومواقع (Web Developer)', code: 'IT-DEV', departmentId: deptsMap['IT'] || null, description: 'تطوير واجهات المستخدم والتطبيقات', active: true },
+      { name: 'مطور واجهات وم مواقع (Web Developer)', code: 'IT-DEV', departmentId: deptsMap['IT'] || null, description: 'تطوير واجهات المستخدم والتطبيقات', active: true },
       { name: 'مدير عمليات ومشروعات', code: 'OPS-MGR', departmentId: deptsMap['OPS'] || null, description: 'إدارة المشاريع والعمليات التشغيلية', active: true },
     ]
 
@@ -70,28 +68,51 @@ export async function seedDemoData() {
       result.positionsCreated++
     }
   } else {
-    posSnap.docs.forEach((doc) => {
-      const data = doc.data()
-      if (data.code) posMap[data.code] = doc.id
+    posSnap.docs.forEach((d) => {
+      const data = d.data()
+      if (data.code) posMap[data.code] = d.id
     })
   }
 
   // ------------------------------------------------------------------
-  // 2. 55 Employees (بيانات كاملة لـ 55 موظف)
+  // 2. 55 Employees (ضمان وجود وتحديث 55 موظفاً بكامل البيانات والرواتب)
   // ------------------------------------------------------------------
   const empSnap = await getDocs(collection(db, COL.employees))
-  let empList = []
+  let existingEmps = empSnap.docs.map((d) => ({ id: d.id, ...d.data() }))
 
-  if (empSnap.empty) {
-    const firstNames = ['أحمد', 'محمد', 'محمود', 'سارة', 'مريم', 'عمر', 'مصطفى', 'ياسمين', 'نورهان', 'علي', 'إبراهيم', 'حسن', 'حسين', 'طارق', 'شريف', 'خالد', 'عمرو', 'أسامة', 'هاني', 'زياد', 'رانيا', 'دينا', 'آية', 'أسماء', 'خديجة', 'فاطمة', 'عادل', 'حاتم', 'كريم', 'ماجد', 'نادر', 'وليد']
-    const middleNames = ['محمود', 'أحمد', 'حسين', 'مصطفى', 'إبراهيم', 'فاروق', 'السيد', 'علي', 'حسن', 'عبدالعزيز', 'سليمان', 'فهمي', 'سعيد', 'نبيل']
-    const familyNames = ['علي', 'حسن', 'خليل', 'فاروق', 'الشريف', 'منصور', 'العربي', 'السيد', 'بدوي', 'سالم', 'رضا', 'سليمان', 'زكي', 'صالح', 'جاد', 'عوف']
+  const firstNames = ['أحمد', 'محمد', 'محمود', 'سارة', 'مريم', 'عمر', 'مصطفى', 'ياسمين', 'نورهان', 'علي', 'إبراهيم', 'حسن', 'حسين', 'طارق', 'شريف', 'خالد', 'عمرو', 'أسامة', 'هاني', 'زياد', 'رانيا', 'دينا', 'آية', 'أسماء', 'خديجة', 'فاطمة', 'عادل', 'حاتم', 'كريم', 'ماجد', 'نادر', 'وليد']
+  const middleNames = ['محمود', 'أحمد', 'حسين', 'مصطفى', 'إبراهيم', 'فاروق', 'السيد', 'علي', 'حسن', 'عبدالعزيز', 'سليمان', 'فهمي', 'سعيد', 'نبيل']
+  const familyNames = ['علي', 'حسن', 'خليل', 'فاروق', 'الشريف', 'منصور', 'العربي', 'السيد', 'بدوي', 'سالم', 'رضا', 'سليمان', 'زكي', 'صالح', 'جاد', 'عوف']
+  const banks = ['البنك الأهلي المصري', 'بنك مصر', 'CIB البنك التجاري الدولي', 'بنك QNB الأهلي', 'بنك الإسكندرية', 'بنك القاهرة']
+  const deptKeys = ['HR', 'FIN', 'SAL', 'IT', 'OPS', 'CS']
+  const posKeys = ['HR-MGR', 'HR-SPEC', 'FIN-DIR', 'FIN-SR', 'FIN-ACC', 'SAL-DIR', 'SAL-REP', 'IT-SR', 'IT-DEV', 'OPS-MGR']
 
-    const banks = ['البنك الأهلي المصري', 'بنك مصر', 'CIB البنك التجاري الدولي', 'بنك QNB الأهلي', 'بنك الإسكندرية', 'بنك القاهرة']
-    const deptKeys = ['HR', 'FIN', 'SAL', 'IT', 'OPS', 'CS']
-    const posKeys = ['HR-MGR', 'HR-SPEC', 'FIN-DIR', 'FIN-SR', 'FIN-ACC', 'SAL-DIR', 'SAL-REP', 'IT-SR', 'IT-DEV', 'OPS-MGR']
+  // Update existing employees if they lack complete data
+  for (const existingEmp of existingEmps) {
+    const salary = Number(existingEmp.baseSalary || existingEmp.basicSalary || 12000)
+    const empCode = existingEmp.employeeCode || `EMP-2026-${String(existingEmp.id).slice(-4)}`
+    const phone = existingEmp.phone || '01012345678'
 
-    for (let i = 1; i <= 55; i++) {
+    await updateDoc(doc(db, COL.employees, existingEmp.id), {
+      baseSalary: salary,
+      basicSalary: salary,
+      employeeCode: empCode,
+      phone,
+      departmentId: existingEmp.departmentId || deptsMap['HR'] || null,
+      positionId: existingEmp.positionId || posMap['HR-MGR'] || null,
+      status: existingEmp.status || 'active',
+      nationalId: existingEmp.nationalId || '29501011234567',
+      bankName: existingEmp.bankName || 'البنك الأهلي المصري',
+      bankAccount: existingEmp.bankAccount || '1234567890123456',
+    })
+  }
+
+  // Create additional employees up to 55
+  const neededCount = 55 - existingEmps.length
+
+  if (neededCount > 0) {
+    const startIndex = existingEmps.length + 1
+    for (let i = startIndex; i <= 55; i++) {
       const fName = firstNames[(i - 1) % firstNames.length]
       const mName = middleNames[(i * 3) % middleNames.length]
       const lName = familyNames[(i * 7) % familyNames.length]
@@ -103,7 +124,7 @@ export async function seedDemoData() {
       const dKey = deptKeys[i % deptKeys.length]
       const pKey = posKeys[i % posKeys.length]
 
-      const basicSalary = 9000 + (i % 12) * 2000
+      const salary = 9000 + (i % 12) * 2000
       const allowances = 1200 + (i % 5) * 600
       const deductions = 300 + (i % 4) * 100
 
@@ -117,8 +138,8 @@ export async function seedDemoData() {
         employeeCode: empCode,
         departmentId: deptsMap[dKey] || null,
         positionId: posMap[pKey] || null,
-        basicSalary,
-        baseSalary: basicSalary,
+        baseSalary: salary,
+        basicSalary: salary,
         allowances,
         deductions,
         phone,
@@ -132,36 +153,52 @@ export async function seedDemoData() {
       }
 
       const docRef = await addDoc(collection(db, COL.employees), empData)
-      empList.push({ id: docRef.id, ...empData })
+      existingEmps.push({ id: docRef.id, ...empData })
       result.employeesCreated++
     }
-  } else {
-    empList = empSnap.docs.map((d) => ({ id: d.id, ...d.data() }))
   }
 
+  // Refetch all employees to get full list
+  const fullEmpSnap = await getDocs(collection(db, COL.employees))
+  const empList = fullEmpSnap.docs.map((d) => ({ id: d.id, ...d.data() }))
+
   // ------------------------------------------------------------------
-  // 3. 30 Clients (بيانات كاملة لـ 30 عميل مع ربطهم بالموظفين)
+  // 3. 30 Clients (ربط 30 عميل بالموظفين)
   // ------------------------------------------------------------------
   const clientSnap = await getDocs(collection(db, COL.clients))
-  let clientList = []
+  let existingClients = clientSnap.docs.map((d) => ({ id: d.id, ...d.data() }))
 
-  if (clientSnap.empty) {
-    const clientCompanies = [
-      'شركة الأهرام للتطوير العقاري', 'مجموعة النيل للتسويق الرقمي', 'مصر للحلول البرمجية والتكنولوجية',
-      'المجموعة المصرية للتجارة والمقاولات', 'شركة دبي للاستثمار والتنمية', 'فارما كير للخدمات الطبية',
-      'جلوبال تيك للأنظمة التكنولوجية', 'أوراسكوم لإدارة المشاريع', 'شركة السويدي للحلول المتكاملة',
-      'شركة الإسكندرية للشحن واللوجستيات', 'مجموعة الفطيم للتجزئة', 'شركة طلعت مصطفى للاستشارات',
-      'كايرو براند لخدمات الدعاية', 'سينا للخدمات البترولية', 'مجموعة الشرق الأوسط للإعلام',
-      'شركة القناة للتوريدات العمومية', 'المصرية للاتصالات والتكنولوجيا', 'شركة السلام للمقاولات العامة',
-      'فودافون مصر لخدمات الأعمال', 'شركة راية لتكنولوجيا المعلومات', 'شركة جهينة للصناعات الغذائية',
-      'مجموعة دومتي للتوزيع', 'السويدي إلكتريك للصناعات', 'شركة إعمار مصر للتطوير',
-      'شركة أورنج للحلول الرقمية', 'مجموعة ماجد الفطيم العقارية', 'شركة بالم هيلز للتعمير',
-      'سيراميكا كليوباترا جروب', 'شركة إيديتا للصناعات الغذائية', 'مجموعة حديد عز للصلب'
-    ]
+  const clientCompanies = [
+    'شركة الأهرام للتطوير العقاري', 'مجموعة النيل للتسويق الرقمي', 'مصر للحلول البرمجية والتكنولوجية',
+    'المجموعة المصرية للتجارة والمقاولات', 'شركة دبي للاستثمار والتنمية', 'فارما كير للخدمات الطبية',
+    'جلوبال تيك للأنظمة التكنولوجية', 'أوراسكوم لإدارة المشاريع', 'شركة السويدي للحلول المتكاملة',
+    'شركة الإسكندرية للشحن واللوجستيات', 'مجموعة الفطيم للتجزئة', 'شركة طلعت مصطفى للاستشارات',
+    'كايرو براند لخدمات الدعاية', 'سينا للخدمات البترولية', 'مجموعة الشرق الأوسط للإعلام',
+    'شركة القناة للتوريدات العمومية', 'المصرية للاتصالات والتكنولوجيا', 'شركة السلام للمقاولات العامة',
+    'فودافون مصر لخدمات الأعمال', 'شركة راية لتكنولوجيا المعلومات', 'شركة جهينة للصناعات الغذائية',
+    'مجموعة دومتي للتوزيع', 'السويدي إلكتريك للصناعات', 'شركة إعمار مصر للتطوير',
+    'شركة أورنج للحلول الرقمية', 'مجموعة ماجد الفطيم العقارية', 'شركة بالم هيلز للتعمير',
+    'سيراميكا كليوباترا جروب', 'شركة إيديتا للصناعات الغذائية', 'مجموعة حديد عز للصلب'
+  ]
 
-    const cities = ['القاهرة - التجمع الخامس', 'الجيزة - الدقي', 'الإسكندرية - سموحة', 'القاهرة - مدينة نصر', 'المنصورة - حي الجامعة', 'الجيزة - 6 أكتوبر']
+  const cities = ['القاهرة - التجمع الخامس', 'الجيزة - الدقي', 'الإسكندرية - سموحة', 'القاهرة - مدينة نصر', 'المنصورة - حي الجامعة', 'الجيزة - 6 أكتوبر']
 
-    for (let c = 1; c <= 30; c++) {
+  // Update existing clients to link employeeId
+  for (let idx = 0; idx < existingClients.length; idx++) {
+    const cl = existingClients[idx]
+    const assignedEmp = empList[idx % empList.length]
+    if (!cl.employeeId && assignedEmp) {
+      await updateDoc(doc(db, COL.clients, cl.id), {
+        employeeId: assignedEmp.id,
+      })
+    }
+  }
+
+  // Create additional clients up to 30
+  const neededClients = 30 - existingClients.length
+  if (neededClients > 0) {
+    const startIndex = existingClients.length + 1
+    for (let c = startIndex; c <= 30; c++) {
       const companyName = clientCompanies[c - 1]
       const contactPerson = `المهندس / ${['أحمد فؤاد', 'محمود سالم', 'عصام عبدالهادي', 'سامح رمزي', 'هاني فريد', 'شريف جلال'][(c - 1) % 6]}`
       const phone = `012${Math.floor(10000000 + Math.random() * 90000000)}`
@@ -170,7 +207,6 @@ export async function seedDemoData() {
       const taxNumber = `300-${c * 123}-${c * 456}`
       const commercialRegister = `CR-${100000 + c * 234}`
 
-      // Link client to an employee
       const assignedEmp = empList[(c - 1) % empList.length]
 
       const clientData = {
@@ -190,21 +226,37 @@ export async function seedDemoData() {
       }
 
       const docRef = await addDoc(collection(db, COL.clients), clientData)
-      clientList.push({ id: docRef.id, ...clientData })
+      existingClients.push({ id: docRef.id, ...clientData })
       result.clientsCreated++
     }
-  } else {
-    clientList = clientSnap.docs.map((d) => ({ id: d.id, ...d.data() }))
   }
 
+  const fullClientSnap = await getDocs(collection(db, COL.clients))
+  const clientList = fullClientSnap.docs.map((d) => ({ id: d.id, ...d.data() }))
+
   // ------------------------------------------------------------------
-  // 4. 19 Invoices across Cairo & Giza Governorates / Treasuries
+  // 4. 19 Invoices (ربط 19 فاتورة بالعملاء والموظفين)
   // ------------------------------------------------------------------
   const invSnap = await getDocs(collection(db, COL.invoices))
-  if (invSnap.empty && clientList.length > 0 && empList.length > 0) {
-    const governorates = ['محافظة القاهرة (خزينة الرئيسي)', 'محافظة الجيزة (خزينة الفرع)']
+  let existingInvoices = invSnap.docs.map((d) => ({ id: d.id, ...d.data() }))
 
-    for (let i = 1; i <= 19; i++) {
+  for (let idx = 0; idx < existingInvoices.length; idx++) {
+    const inv = existingInvoices[idx]
+    const assignedEmp = empList[(idx * 2) % empList.length]
+    if (!inv.employeeId && assignedEmp) {
+      await updateDoc(doc(db, COL.invoices, inv.id), {
+        employeeId: assignedEmp.id,
+        employeeName: assignedEmp.name,
+      })
+    }
+  }
+
+  const neededInvoices = 19 - existingInvoices.length
+  if (neededInvoices > 0 && clientList.length > 0 && empList.length > 0) {
+    const governorates = ['محافظة القاهرة (خزينة الرئيسي)', 'محافظة الجيزة (خزينة الفرع)']
+    const startIndex = existingInvoices.length + 1
+
+    for (let i = startIndex; i <= 19; i++) {
       const client = clientList[(i - 1) % clientList.length]
       const assignedEmp = empList[(i * 2) % empList.length]
       const governorate = governorates[i % 2]
@@ -245,7 +297,6 @@ export async function seedDemoData() {
 
       const invRef = await addDoc(collection(db, COL.invoices), invoiceData)
 
-      // Add Payment record if paid
       if (paidAmount > 0) {
         await addDoc(collection(db, `${COL.invoices}/${invRef.id}/payments`), {
           amount: paidAmount,
@@ -261,13 +312,15 @@ export async function seedDemoData() {
   }
 
   // ------------------------------------------------------------------
-  // 5. Employee Entries (لتغذية عمود "صافي المصروف له")
+  // 5. Employee Entries (لتغذية "صافي المصروف له" لجميع الـ 55 موظف)
   // ------------------------------------------------------------------
   const entrySnap = await getDocs(collection(db, COL.employeeEntries))
-  if (entrySnap.empty && empList.length > 0) {
-    for (const emp of empList) {
-      // 1. Salary Entry
-      const salaryAmt = Number(emp.basicSalary || emp.baseSalary || 12000)
+  const existingEntries = entrySnap.docs.map((d) => d.data())
+
+  for (const emp of empList) {
+    const hasEntry = existingEntries.some((e) => e.employeeId === emp.id)
+    if (!hasEntry) {
+      const salaryAmt = Number(emp.baseSalary || emp.basicSalary || 12000)
       await addDoc(collection(db, COL.employeeEntries), {
         employeeId: emp.id,
         employeeName: emp.name,
@@ -280,9 +333,8 @@ export async function seedDemoData() {
       })
       result.entriesCreated++
 
-      // 2. Bonus Entry
-      if (Math.random() < 0.5) {
-        const bonusAmt = 1500 + Math.floor(Math.random() * 2000)
+      if (Math.random() < 0.6) {
+        const bonusAmt = 1500 + Math.floor(Math.random() * 2500)
         await addDoc(collection(db, COL.employeeEntries), {
           employeeId: emp.id,
           employeeName: emp.name,
@@ -290,7 +342,7 @@ export async function seedDemoData() {
           amount: bonusAmt,
           paid: true,
           date: '2026-09-10',
-          notes: 'حافز إنجاز وتفوق أداء',
+          notes: 'حافز أداء وتفوق',
           createdAt: new Date(),
         })
         result.entriesCreated++
@@ -299,42 +351,7 @@ export async function seedDemoData() {
   }
 
   // ------------------------------------------------------------------
-  // 6. Services & Products (الخدمات والمنتجات)
-  // ------------------------------------------------------------------
-  const serviceSnap = await getDocs(collection(db, COL.services))
-  if (serviceSnap.empty) {
-    const services = [
-      { name: 'تصميم وتطوير موقع إلكتروني احترافي', code: 'SRV-WEB', defaultPrice: 25000, active: true },
-      { name: 'إدارة حملات التسويق الإلكتروني والإعلانات', code: 'SRV-MKT', defaultPrice: 15000, active: true },
-      { name: 'استشارات وتحول رقمي للشركات', code: 'SRV-CONSULT', defaultPrice: 35000, active: true },
-      { name: 'تصميم الهوية البصرية والعلامة التجارية', code: 'SRV-BRAND', defaultPrice: 18000, active: true },
-      { name: 'تطبيق موظفين ونظام إدارة موارد البشرية', code: 'SRV-HRM', defaultPrice: 45000, active: true },
-    ]
-    for (const s of services) {
-      await addDoc(collection(db, COL.services), { ...s, createdAt: new Date() })
-      result.servicesCreated++
-    }
-  }
-
-  // ------------------------------------------------------------------
-  // 7. Expenses & Categories (المصروفات وتصنيفاتها)
-  // ------------------------------------------------------------------
-  const expSnap = await getDocs(collection(db, COL.expenses))
-  if (expSnap.empty) {
-    const expenses = [
-      { description: 'إيجار المقر الرئيسي والتنفيذي - سبتمبر 2026', amount: 35000, category: 'إيجارات ومقرات', date: '2026-09-01', paid: true },
-      { description: 'فاتورة الكهرباء والمياه والإنترنت المركزي', amount: 8500, category: 'مرافق ومنافع', date: '2026-09-05', paid: true },
-      { description: 'تجديد تراخيص الخوادم والاشتراكات السحابية', amount: 14000, category: 'تكنولوجيا واشتراكات', date: '2026-09-08', paid: true },
-      { description: 'مستلزمات ومطبوعات وأدوات مكتبية', amount: 4200, category: 'مصروفات إدارية', date: '2026-09-12', paid: true },
-    ]
-    for (const e of expenses) {
-      await addDoc(collection(db, COL.expenses), { ...e, createdAt: new Date() })
-      result.expensesCreated++
-    }
-  }
-
-  // ------------------------------------------------------------------
-  // 8. Attendance & Leave Records for 55 Employees
+  // 6. Attendance Records
   // ------------------------------------------------------------------
   const settingsRef = doc(db, 'attendanceSettings', 'default')
   await setDoc(
@@ -386,37 +403,6 @@ export async function seedDemoData() {
         })
         result.attendanceRecordsCreated++
       }
-    }
-  }
-
-  // ------------------------------------------------------------------
-  // 9. Allowances & Deductions
-  // ------------------------------------------------------------------
-  const allowSnap = await getDocs(collection(db, 'employeeAllowances'))
-  if (allowSnap.empty) {
-    const defaultAllowances = [
-      { name: 'بدل انتقالات ومواصلات', code: 'TRANS', type: 'fixed', defaultAmount: 1200, description: 'بدل انتقالات داخلية شهري' },
-      { name: 'بدل سكن وإقامة', code: 'HOUS', type: 'fixed', defaultAmount: 2000, description: 'بدل سكن الموظفين' },
-      { name: 'حافز أداء وتفوق إنتاجي', code: 'PERF', type: 'percentage', defaultAmount: 15, description: 'حافز تفوق مرن' },
-      { name: 'بدل مظهر ومكافأة شهرية', code: 'BONUS', type: 'fixed', defaultAmount: 1000, description: 'مكافأة تميز' },
-    ]
-    for (const item of defaultAllowances) {
-      await addDoc(collection(db, 'employeeAllowances'), { ...item, createdAt: new Date() })
-      result.allowancesCreated++
-    }
-  }
-
-  const dedSnap = await getDocs(collection(db, 'employeeDeductions'))
-  if (dedSnap.empty) {
-    const defaultDeductions = [
-      { name: 'خصم التأمينات الاجتماعية', code: 'SOC_INS', type: 'percentage', defaultAmount: 11, description: 'حصة التأمينات الاجتماعية' },
-      { name: 'ضريبة كسب العمل والقانونية', code: 'TAX_INC', type: 'percentage', defaultAmount: 5, description: 'ضريبة كسب العمل القانونية' },
-      { name: 'خصم التأخيرات والغياب', code: 'LATE_ABS', type: 'hourly', defaultAmount: 1, description: 'خصم التأخير التلقائي' },
-      { name: 'استرداد سلفة مؤقتة', code: 'ADV_REC', type: 'fixed', defaultAmount: 500, description: 'استقطاع قسط سلفة' },
-    ]
-    for (const item of defaultDeductions) {
-      await addDoc(collection(db, 'employeeDeductions'), { ...item, createdAt: new Date() })
-      result.deductionsCreated++
     }
   }
 

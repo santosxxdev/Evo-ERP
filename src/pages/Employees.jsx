@@ -489,7 +489,7 @@ export default function Employees() {
                       <StatusBadge status={row.status} archived={row.archived} />
                     </Td>
                     <Td>
-                      <span className="num text-slate-700">{formatMoney(row.baseSalary)}</span>
+                      <span className="num text-slate-700">{formatMoney(row.baseSalary || row.basicSalary || 0)}</span>
                     </Td>
                     <Td>
                       <span className="num font-semibold text-slate-800">{stat?.clients ?? 0}</span>
