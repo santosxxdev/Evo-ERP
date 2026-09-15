@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { useI18n } from '../i18n'
 import {
   COL,
@@ -185,13 +186,42 @@ export default function Employees() {
   const { rows: accounts } = useCollection(COL.accounts, 'code', 'asc')
   const { rows: accountingTxs } = useCollection(COL.accountingTransactions, 'transactionDate', 'desc')
 
+  const [searchParams, setSearchParams] = useSearchParams()
+  const modalParam = searchParams.get('modal')
+
   const [search, setSearch] = useState('')
   const [editing, setEditing] = useState(null)
   const [viewing, setViewing] = useState(null)
   const [removing, setRemoving] = useState(null)
-  const [showDeptsModal, setShowDeptsModal] = useState(false)
-  const [showPositionsModal, setShowPositionsModal] = useState(false)
-  const [showMigrationModal, setShowMigrationModal] = useState(false)
+
+  const showDeptsModal = modalParam === 'depts'
+  const showPositionsModal = modalParam === 'positions'
+  const showMigrationModal = modalParam === 'migration'
+
+  const setShowDeptsModal = (open) => {
+    setSearchParams((prev) => {
+      if (open) prev.set('modal', 'depts')
+      else prev.delete('modal')
+      return prev
+    }, { replace: true })
+  }
+
+  const setShowPositionsModal = (open) => {
+    setSearchParams((prev) => {
+      if (open) prev.set('modal', 'positions')
+      else prev.delete('modal')
+      return prev
+    }, { replace: true })
+  }
+
+  const setShowMigrationModal = (open) => {
+    setSearchParams((prev) => {
+      if (open) prev.set('modal', 'migration')
+      else prev.delete('modal')
+      return prev
+    }, { replace: true })
+  }
+
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(null)
   const [postingState, setPostingState] = useState({ busy: false, msg: null, err: null })
