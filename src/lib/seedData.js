@@ -9,7 +9,11 @@ export async function seedDemoData() {
     employeesCreated: 0,
     clientsCreated: 0,
     invoicesCreated: 0,
+    entriesCreated: 0,
+    servicesCreated: 0,
     expensesCreated: 0,
+    campaignsCreated: 0,
+    quotationsCreated: 0,
     attendanceRecordsCreated: 0,
     allowancesCreated: 0,
     deductionsCreated: 0,
@@ -99,9 +103,9 @@ export async function seedDemoData() {
       const dKey = deptKeys[i % deptKeys.length]
       const pKey = posKeys[i % posKeys.length]
 
-      const basicSalary = 8000 + (i % 10) * 2500
-      const allowances = 1000 + (i % 5) * 800
-      const deductions = 200 + (i % 4) * 150
+      const basicSalary = 9000 + (i % 12) * 2000
+      const allowances = 1200 + (i % 5) * 600
+      const deductions = 300 + (i % 4) * 100
 
       const phone = `01${(i % 4) === 0 ? '0' : (i % 4) === 1 ? '1' : (i % 4) === 2 ? '2' : '5'}${Math.floor(10000000 + Math.random() * 90000000)}`
       const email = `emp${i}@iyora.com`
@@ -114,6 +118,7 @@ export async function seedDemoData() {
         departmentId: deptsMap[dKey] || null,
         positionId: posMap[pKey] || null,
         basicSalary,
+        baseSalary: basicSalary,
         allowances,
         deductions,
         phone,
@@ -135,7 +140,7 @@ export async function seedDemoData() {
   }
 
   // ------------------------------------------------------------------
-  // 3. 30 Clients (بيانات كاملة لـ 30 عميل)
+  // 3. 30 Clients (بيانات كاملة لـ 30 عميل مع ربطهم بالموظفين)
   // ------------------------------------------------------------------
   const clientSnap = await getDocs(collection(db, COL.clients))
   let clientList = []
@@ -165,6 +170,9 @@ export async function seedDemoData() {
       const taxNumber = `300-${c * 123}-${c * 456}`
       const commercialRegister = `CR-${100000 + c * 234}`
 
+      // Link client to an employee
+      const assignedEmp = empList[(c - 1) % empList.length]
+
       const clientData = {
         name: companyName,
         contactPerson,
@@ -173,6 +181,7 @@ export async function seedDemoData() {
         address,
         taxNumber,
         commercialRegister,
+        employeeId: assignedEmp ? assignedEmp.id : null,
         totalInvoiced: 0,
         totalPaid: 0,
         balance: 0,
@@ -192,15 +201,16 @@ export async function seedDemoData() {
   // 4. 19 Invoices across Cairo & Giza Governorates / Treasuries
   // ------------------------------------------------------------------
   const invSnap = await getDocs(collection(db, COL.invoices))
-  if (invSnap.empty && clientList.length > 0) {
+  if (invSnap.empty && clientList.length > 0 && empList.length > 0) {
     const governorates = ['محافظة القاهرة (خزينة الرئيسي)', 'محافظة الجيزة (خزينة الفرع)']
 
     for (let i = 1; i <= 19; i++) {
       const client = clientList[(i - 1) % clientList.length]
+      const assignedEmp = empList[(i * 2) % empList.length]
       const governorate = governorates[i % 2]
       const invNum = `INV-2026-${String(i).padStart(4, '0')}`
 
-      const subtotal = 15000 + (i * 3500)
+      const subtotal = 18000 + (i * 4500)
       const taxRate = 14
       const taxAmount = (subtotal * taxRate) / 100
       const total = subtotal + taxAmount
@@ -213,6 +223,8 @@ export async function seedDemoData() {
         invoiceNumber: invNum,
         clientId: client.id,
         clientName: client.name,
+        employeeId: assignedEmp ? assignedEmp.id : null,
+        employeeName: assignedEmp ? assignedEmp.name : '',
         governorate,
         treasuryName: governorate,
         date: `2026-09-${String((i % 25) + 1).padStart(2, '0')}`,
@@ -249,7 +261,80 @@ export async function seedDemoData() {
   }
 
   // ------------------------------------------------------------------
-  // 5. Attendance & Leave Records for 55 Employees
+  // 5. Employee Entries (لتغذية عمود "صافي المصروف له")
+  // ------------------------------------------------------------------
+  const entrySnap = await getDocs(collection(db, COL.employeeEntries))
+  if (entrySnap.empty && empList.length > 0) {
+    for (const emp of empList) {
+      // 1. Salary Entry
+      const salaryAmt = Number(emp.basicSalary || emp.baseSalary || 12000)
+      await addDoc(collection(db, COL.employeeEntries), {
+        employeeId: emp.id,
+        employeeName: emp.name,
+        type: 'salary',
+        amount: salaryAmt,
+        paid: true,
+        date: '2026-09-01',
+        notes: 'صرف مرتب شهر سبتمبر 2026',
+        createdAt: new Date(),
+      })
+      result.entriesCreated++
+
+      // 2. Bonus Entry
+      if (Math.random() < 0.5) {
+        const bonusAmt = 1500 + Math.floor(Math.random() * 2000)
+        await addDoc(collection(db, COL.employeeEntries), {
+          employeeId: emp.id,
+          employeeName: emp.name,
+          type: 'bonus',
+          amount: bonusAmt,
+          paid: true,
+          date: '2026-09-10',
+          notes: 'حافز إنجاز وتفوق أداء',
+          createdAt: new Date(),
+        })
+        result.entriesCreated++
+      }
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // 6. Services & Products (الخدمات والمنتجات)
+  // ------------------------------------------------------------------
+  const serviceSnap = await getDocs(collection(db, COL.services))
+  if (serviceSnap.empty) {
+    const services = [
+      { name: 'تصميم وتطوير موقع إلكتروني احترافي', code: 'SRV-WEB', defaultPrice: 25000, active: true },
+      { name: 'إدارة حملات التسويق الإلكتروني والإعلانات', code: 'SRV-MKT', defaultPrice: 15000, active: true },
+      { name: 'استشارات وتحول رقمي للشركات', code: 'SRV-CONSULT', defaultPrice: 35000, active: true },
+      { name: 'تصميم الهوية البصرية والعلامة التجارية', code: 'SRV-BRAND', defaultPrice: 18000, active: true },
+      { name: 'تطبيق موظفين ونظام إدارة موارد البشرية', code: 'SRV-HRM', defaultPrice: 45000, active: true },
+    ]
+    for (const s of services) {
+      await addDoc(collection(db, COL.services), { ...s, createdAt: new Date() })
+      result.servicesCreated++
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // 7. Expenses & Categories (المصروفات وتصنيفاتها)
+  // ------------------------------------------------------------------
+  const expSnap = await getDocs(collection(db, COL.expenses))
+  if (expSnap.empty) {
+    const expenses = [
+      { description: 'إيجار المقر الرئيسي والتنفيذي - سبتمبر 2026', amount: 35000, category: 'إيجارات ومقرات', date: '2026-09-01', paid: true },
+      { description: 'فاتورة الكهرباء والمياه والإنترنت المركزي', amount: 8500, category: 'مرافق ومنافع', date: '2026-09-05', paid: true },
+      { description: 'تجديد تراخيص الخوادم والاشتراكات السحابية', amount: 14000, category: 'تكنولوجيا واشتراكات', date: '2026-09-08', paid: true },
+      { description: 'مستلزمات ومطبوعات وأدوات مكتبية', amount: 4200, category: 'مصروفات إدارية', date: '2026-09-12', paid: true },
+    ]
+    for (const e of expenses) {
+      await addDoc(collection(db, COL.expenses), { ...e, createdAt: new Date() })
+      result.expensesCreated++
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // 8. Attendance & Leave Records for 55 Employees
   // ------------------------------------------------------------------
   const settingsRef = doc(db, 'attendanceSettings', 'default')
   await setDoc(
@@ -305,7 +390,7 @@ export async function seedDemoData() {
   }
 
   // ------------------------------------------------------------------
-  // 6. Allowances & Deductions
+  // 9. Allowances & Deductions
   // ------------------------------------------------------------------
   const allowSnap = await getDocs(collection(db, 'employeeAllowances'))
   if (allowSnap.empty) {
@@ -325,7 +410,7 @@ export async function seedDemoData() {
   if (dedSnap.empty) {
     const defaultDeductions = [
       { name: 'خصم التأمينات الاجتماعية', code: 'SOC_INS', type: 'percentage', defaultAmount: 11, description: 'حصة التأمينات الاجتماعية' },
-      { name: 'ضريبة ضريبة المرتبات وكسب العمل', code: 'TAX_INC', type: 'percentage', defaultAmount: 5, description: 'ضريبة كسب العمل القانونية' },
+      { name: 'ضريبة كسب العمل والقانونية', code: 'TAX_INC', type: 'percentage', defaultAmount: 5, description: 'ضريبة كسب العمل القانونية' },
       { name: 'خصم التأخيرات والغياب', code: 'LATE_ABS', type: 'hourly', defaultAmount: 1, description: 'خصم التأخير التلقائي' },
       { name: 'استرداد سلفة مؤقتة', code: 'ADV_REC', type: 'fixed', defaultAmount: 500, description: 'استقطاع قسط سلفة' },
     ]
