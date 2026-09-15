@@ -1,0 +1,259 @@
+@import 'tailwindcss';
+
+@import '@fontsource/cairo/400.css';
+@import '@fontsource/cairo/500.css';
+@import '@fontsource/cairo/600.css';
+@import '@fontsource/cairo/700.css';
+
+/* الوضع الليلي مربوط بسمة data-theme على <html> */
+@custom-variant dark ([data-theme="dark"] &);
+
+@theme {
+  --font-sans: 'Cairo', ui-sans-serif, system-ui, 'Segoe UI', sans-serif;
+
+  --color-brand-50: #f5f3ff;
+  --color-brand-100: #ede9fe;
+  --color-brand-200: #ddd6fe;
+  --color-brand-300: #c4b5fd;
+  --color-brand-400: #a78bfa;
+  --color-brand-500: #8b5cf6;
+  --color-brand-600: #7c3aed;
+  --color-brand-700: #6d28d9;
+  --color-brand-800: #5b21b6;
+  --color-brand-900: #4c1d95;
+
+  --color-ink-700: #1c2440;
+  --color-ink-800: #141b33;
+  --color-ink-900: #0f1528;
+  --color-ink-950: #0b1020;
+}
+
+@layer base {
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    @apply bg-slate-100 text-slate-800 font-sans antialiased;
+  }
+
+  /*
+   * الوضع الليلي: نقلب سلّم اللون المحايد (slate) و«الأبيض» لقيم داكنة،
+   * فينقلب النظام كله دفعة واحدة لأن كل الشاشات مبنية على slate + bg-white.
+   * ألوان الدلالة (أخضر/كهرماني/أحمر/بنفسجي) بنخفّف درجاتها الفاتحة فقط.
+   */
+  [data-theme='dark'] {
+    color-scheme: dark;
+
+    --color-white: #1b1f27;
+    --color-slate-50: #232833;
+    --color-slate-100: #14161c;
+    --color-slate-200: #2e333e;
+    --color-slate-300: #3c434f;
+    --color-slate-400: #7c838f;
+    --color-slate-500: #9aa2ad;
+    --color-slate-600: #b7bec8;
+    --color-slate-700: #cfd5dd;
+    --color-slate-800: #e4e8ee;
+    --color-slate-900: #f2f4f8;
+    --color-slate-950: #f9fafb;
+
+    /* خلفيات الشارات الفاتحة تبقى داكنة، ونصّها (-700) يبقى فاتح */
+    --color-emerald-50: #0f241c;
+    --color-emerald-700: #34d399;
+    --color-amber-50: #2b2110;
+    --color-amber-600: #f59e0b;
+    --color-amber-700: #fbbf24;
+    --color-red-50: #2b1414;
+    --color-red-700: #fca5a5;
+    --color-rose-50: #2b1418;
+    --color-rose-700: #fda4af;
+    --color-sky-50: #0f2233;
+    --color-sky-600: #38bdf8;
+    --color-sky-700: #7dd3fc;
+    --color-violet-50: #221b38;
+    --color-brand-50: #221b38;
+    --color-brand-100: #2b2250;
+    --color-brand-700: #c4b5fd;
+  }
+
+  /*
+   * إعادة تثبيت السلّم الفاتح — يستخدمها أي عنصر عليه data-theme="light"
+   * جوّه شجرة داكنة (شاشة الدخول والبداية مصمّمتان داكنتين دائمًا).
+   */
+  [data-theme='light'] {
+    color-scheme: light;
+    --color-white: #fff;
+    --color-slate-50: #f8fafc;
+    --color-slate-100: #f1f5f9;
+    --color-slate-200: #e2e8f0;
+    --color-slate-300: #cbd5e1;
+    --color-slate-400: #94a3b8;
+    --color-slate-500: #64748b;
+    --color-slate-600: #475569;
+    --color-slate-700: #334155;
+    --color-slate-800: #1e293b;
+    --color-slate-900: #0f172a;
+    --color-slate-950: #020617;
+    --color-emerald-50: #ecfdf5;
+    --color-emerald-600: #059669;
+    --color-emerald-700: #047857;
+    --color-amber-50: #fffbeb;
+    --color-amber-600: #d97706;
+    --color-amber-700: #b45309;
+    --color-amber-800: #92400e;
+    --color-amber-900: #78350f;
+    --color-red-50: #fef2f2;
+    --color-red-500: #ef4444;
+    --color-red-600: #dc2626;
+    --color-red-700: #b91c1c;
+    --color-red-800: #991b1b;
+    --color-rose-50: #fff1f2;
+    --color-rose-600: #e11d48;
+    --color-sky-50: #f0f9ff;
+    --color-sky-600: #0284c7;
+    --color-sky-700: #0369a1;
+    --color-violet-50: #f5f3ff;
+    --color-violet-600: #7c3aed;
+    --color-brand-50: #f5f3ff;
+    --color-brand-100: #ede9fe;
+    --color-brand-700: #6d28d9;
+  }
+
+  /* أزرار ملوّنة نصّها يفضل فاتح رغم قلب «الأبيض» */
+  [data-theme='dark'] .text-white {
+    color: #f4f7fb;
+  }
+
+  [data-theme='dark'] ::-webkit-scrollbar-thumb {
+    background: rgb(120 130 145 / 0.4);
+  }
+
+  /* الأرقام تُقرأ دائمًا من اليسار لليمين حتى داخل النص العربي */
+  .num {
+    font-variant-numeric: tabular-nums;
+    direction: ltr;
+    display: inline-block;
+    unicode-bidi: isolate;
+  }
+}
+
+@layer components {
+  .card {
+    @apply bg-white rounded-2xl border border-slate-200/80 shadow-sm;
+  }
+
+  .btn,
+  .btn-primary,
+  .btn-ghost {
+    @apply inline-flex items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm font-semibold
+           transition-colors duration-150 disabled:opacity-50 disabled:cursor-not-allowed;
+  }
+
+  .btn-primary {
+    @apply bg-brand-600 text-white hover:bg-brand-700 active:bg-brand-800;
+  }
+
+  .btn-ghost {
+    @apply border border-slate-200 bg-white text-slate-700 hover:bg-slate-50;
+  }
+
+  .field {
+    @apply w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm
+           outline-none transition placeholder:text-slate-400
+           focus:border-brand-500 focus:ring-4 focus:ring-brand-500/10;
+  }
+
+  .label {
+    @apply block text-sm font-semibold text-slate-600 mb-1.5;
+  }
+}
+
+/* شريط التمرير */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: rgb(148 163 184 / 0.5);
+  border-radius: 999px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* ================================================================ */
+/*  الطباعة و PDF                                                      */
+/* ================================================================ */
+
+/* مستند الطباعة المخصّص (الفاتورة) — مخفي على الشاشة، يُنقل لـ <body> */
+.print-doc {
+  display: none;
+}
+
+@media print {
+  aside,
+  header,
+  .no-print {
+    display: none !important;
+  }
+
+  html,
+  body {
+    background: #fff !important;
+    color: #000 !important;
+    overflow: visible !important;
+    height: auto !important;
+  }
+
+  main {
+    max-width: none !important;
+    padding: 0 !important;
+    margin: 0 !important;
+  }
+
+  .lg\:ms-\[264px\] {
+    margin-inline-start: 0 !important;
+  }
+
+  /*
+   * لما يكون فيه مستند طباعة مخصّص (فاتورة مفتوحة) — نخفي كل شيء غيره
+   * ونطبع صفحة واحدة نظيفة بلا تكرار ولا مساحات فارغة من المودال والقوائم.
+   */
+  body:has(.print-doc) > *:not(.print-doc),
+  body.printing-doc > *:not(.print-doc) {
+    display: none !important;
+  }
+  .print-doc {
+    display: block !important;
+    position: static !important;
+    width: 100% !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    background: #fff !important;
+  }
+
+  .card {
+    border-color: #e2e8f0 !important;
+    box-shadow: none !important;
+  }
+
+  .print-doc,
+  .print-doc * {
+    overflow: visible !important;
+  }
+
+  table {
+    font-size: 11px;
+    break-inside: auto;
+  }
+  tr,
+  img {
+    break-inside: avoid;
+  }
+
+  @page {
+    margin: 14mm;
+    size: A4;
+  }
+}

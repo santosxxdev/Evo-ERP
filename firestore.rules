@@ -1,0 +1,230 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    /* ---------------------------------------------------------------- */
+    /*  الهوية والدور                                                    */
+    /* ---------------------------------------------------------------- */
+
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function profilePath() {
+      return /databases/$(database)/documents/users/$(request.auth.uid);
+    }
+
+    function hasProfile() {
+      return signedIn() && exists(profilePath());
+    }
+
+    function profile() {
+      return get(profilePath()).data;
+    }
+
+    function role() {
+      return hasProfile() && profile().active != false ? profile().role : 'none';
+    }
+
+    function isAdmin() { return role() == 'admin'; }
+    function isAccountant() { return role() == 'accountant'; }
+    function isSales() { return role() == 'sales'; }
+    function isViewer() { return role() == 'viewer'; }
+
+    function finance() { return isAdmin() || isAccountant(); }
+    function opsWrite() { return isAdmin() || isAccountant() || isSales(); }
+    function member() { return role() != 'none'; }
+
+    function founderUid() {
+      return 'LNXONrKDHiYuB7wiuT4nHN9h8z33';
+    }
+
+    function bootstrapping() {
+      return signedIn() && request.auth.uid == founderUid() && !exists(profilePath());
+    }
+
+    /* ---------------------------------------------------------------- */
+    /*  المستخدمون                                                       */
+    /* ---------------------------------------------------------------- */
+
+    match /users/{userId} {
+      allow get: if signedIn() && (userId == request.auth.uid || isAdmin());
+      allow list: if isAdmin() || bootstrapping();
+      allow create: if isAdmin()
+                    || (bootstrapping()
+                        && userId == request.auth.uid
+                        && request.resource.data.role == 'admin');
+      allow update, delete: if isAdmin();
+    }
+
+    /* ---------------------------------------------------------------- */
+    /*  بيانات العمل اليومية                                             */
+    /* ---------------------------------------------------------------- */
+
+    match /clients/{id} {
+      allow read: if member();
+      allow write, delete: if opsWrite();
+    }
+
+    match /invoices/{id} {
+      allow read: if member();
+      allow create, update, delete: if isAdmin();
+
+      match /payments/{paymentId} {
+        allow read: if member();
+        allow create, update, delete: if isAdmin();
+      }
+    }
+
+    match /services/{id} {
+      allow read: if member();
+      allow write, delete: if opsWrite();
+    }
+
+    match /quotations/{id} {
+      allow read: if member();
+      allow write, delete: if opsWrite();
+    }
+
+    match /campaigns/{id} {
+      allow read: if member();
+      allow write, delete: if opsWrite();
+    }
+
+    match /retainers/{id} {
+      allow read: if member();
+      allow write, delete: if opsWrite();
+    }
+
+    match /activityTypes/{id} {
+      allow read: if member();
+      allow write, delete: if opsWrite();
+    }
+
+    match /serviceCategories/{id} {
+      allow read: if member();
+      allow write, delete: if opsWrite();
+    }
+
+    match /employeeTypes/{id} {
+      allow read: if member();
+      allow write, delete: if opsWrite();
+    }
+
+    match /assetCategories/{id} {
+      allow read: if member();
+      allow write, delete: if finance();
+    }
+
+    match /vendorSpecialties/{id} {
+      allow read: if member();
+      allow write, delete: if finance();
+    }
+
+    match /paymentMethods/{id} {
+      allow read: if member();
+      allow write, delete: if finance();
+    }
+
+    /* ---------------------------------------------------------------- */
+    /*  البيانات المالية الداخلية                                         */
+    /* ---------------------------------------------------------------- */
+
+    match /employees/{id} {
+      allow read: if member();
+      allow write, delete: if finance();
+    }
+
+    match /employeeEntries/{id} {
+      allow read, write, delete: if finance();
+    }
+
+    match /vendors/{id} {
+      allow read, write, delete: if finance();
+    }
+
+    match /jobCosts/{id} {
+      allow read, write, delete: if finance();
+    }
+
+    match /assets/{id} {
+      allow read, write, delete: if finance();
+    }
+
+    match /maintenance/{id} {
+      allow read, write, delete: if finance();
+    }
+
+    match /assetUsage/{id} {
+      allow read, write, delete: if finance();
+    }
+
+    match /assetLocations/{id} {
+      allow read: if member();
+      allow write, delete: if finance();
+    }
+
+    match /expenses/{id} {
+      allow read, write, delete: if finance();
+    }
+
+    match /expenseCategories/{id} {
+      allow read: if member();
+      allow write, delete: if finance();
+    }
+
+    match /accounts/{id} {
+      allow read, write, delete: if finance();
+    }
+
+    match /accountingTransactions/{id} {
+      allow read: if finance();
+      allow create: if finance();
+      allow update, delete: if false;
+    }
+
+    match /purchaseInvoices/{id} {
+      allow read: if finance();
+      allow write, delete: if isAdmin();
+    }
+
+    match /purchaseReturns/{id} {
+      allow read: if finance();
+      allow write, delete: if isAdmin();
+    }
+
+    match /supplierCreditNotes/{id} {
+      allow read: if finance();
+      allow write, delete: if isAdmin();
+    }
+
+    match /vendorAdvances/{id} {
+      allow read: if finance();
+      allow write, delete: if isAdmin();
+
+      match /applications/{appId} {
+        allow read: if finance();
+        allow write, delete: if isAdmin();
+      }
+    }
+
+    match /journalEntries/{id} {
+      allow read, write, delete: if finance();
+    }
+
+    match /counters/{id} {
+      allow read, write, delete: if opsWrite();
+    }
+
+    match /settings/{id} {
+      allow read: if member();
+      allow write: if isAdmin();
+    }
+
+    match /{path=**}/payments/{paymentId} {
+      allow read: if member();
+      allow write, delete: if isAdmin();
+    }
+  }
+}
