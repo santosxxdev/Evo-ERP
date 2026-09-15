@@ -535,14 +535,14 @@ export default function Payroll() {
           {/* Export CSV */}
           {payrollItems.length > 0 && (
             <Button variant="ghost" onClick={exportPayrollCSV}>
-              📥 {t('payroll.exportCsv')}
+              {t('payroll.exportCsv')}
             </Button>
           )}
 
           {/* Print Report */}
           {payrollRun && (
             <Button variant="ghost" onClick={() => window.print()}>
-              🖨️ {t('payroll.printReport')}
+              {t('payroll.printReport')}
             </Button>
           )}
 
@@ -625,7 +625,7 @@ export default function Payroll() {
               : 'border-transparent text-slate-500 hover:text-slate-700'
           }`}
         >
-          📋 {t('payroll.tab.operations')}
+          {t('payroll.tab.operations')}
         </button>
         <button
           type="button"
@@ -636,7 +636,7 @@ export default function Payroll() {
               : 'border-transparent text-slate-500 hover:text-slate-700'
           }`}
         >
-          ⚖️ {t('payroll.tab.reconciliation')}
+          {t('payroll.tab.reconciliation')}
         </button>
         <button
           type="button"
@@ -647,7 +647,7 @@ export default function Payroll() {
               : 'border-transparent text-slate-500 hover:text-slate-700'
           }`}
         >
-          👤 {t('payroll.tab.statements')}
+          {t('payroll.tab.statements')}
         </button>
       </div>
 
@@ -824,7 +824,7 @@ export default function Payroll() {
                             className="px-2 py-1 text-xs text-brand-600"
                             onClick={() => setPayslipItem(item)}
                           >
-                            📄 {t('payroll.payslipBtn')}
+                            {t('payroll.payslipBtn')}
                           </Button>
                         </div>
                       </Td>
@@ -940,7 +940,7 @@ export default function Payroll() {
 
             {selectedStatementItem && (
               <Button variant="primary" onClick={() => setPayslipItem(selectedStatementItem)}>
-                📄 {t('payroll.stmt.openPayslip')}
+                {t('payroll.stmt.openPayslip')}
               </Button>
             )}
           </div>
@@ -1275,7 +1275,7 @@ export default function Payroll() {
                 {t('payroll.modal.close')}
               </Button>
               <Button variant="primary" onClick={() => window.print()}>
-                🖨️ {t('payroll.payslip.printBtn')}
+                {t('payroll.payslip.printBtn')}
               </Button>
             </>
           }
