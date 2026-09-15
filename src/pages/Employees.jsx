@@ -173,6 +173,8 @@ function StatusBadge({ status, archived }) {
 export default function Employees() {
   const { t, locale } = useI18n()
   const authContext = useAuth()
+  const role = authContext?.role
+  const canModify = role === 'admin' || role === 'accountant'
   const { settings } = useSettings()
   const { rows, loading } = useCollection(COL.employees, 'name', 'asc')
   const { rows: clients } = useCollection(COL.clients, 'name', 'asc')
