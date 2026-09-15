@@ -133,11 +133,33 @@ service cloud.firestore {
     }
 
     match /payroll/{id} {
-      allow read, write, delete: if finance();
+      allow read: if member();
+      allow write, delete: if finance();
     }
 
     match /payrollRuns/{id} {
-      allow read, write, delete: if finance();
+      allow read: if member();
+      allow write, delete: if finance();
+    }
+
+    match /payrollItems/{id} {
+      allow read: if member();
+      allow write, delete: if finance();
+    }
+
+    match /supplierPayables/{id} {
+      allow read: if member();
+      allow write, delete: if finance();
+    }
+
+    match /vendorPayments/{id} {
+      allow read: if member();
+      allow write, delete: if finance();
+    }
+
+    match /vendorAdvanceApplications/{id} {
+      allow read: if member();
+      allow write, delete: if finance();
     }
 
     match /assetCategories/{id} {
