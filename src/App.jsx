@@ -13,7 +13,9 @@ import Campaigns from './pages/Campaigns'
 import ClientProfile from './pages/ClientProfile'
 import Clients from './pages/Clients'
 import Dashboard from './pages/Dashboard'
+import Departments from './pages/Departments'
 import Employees from './pages/Employees'
+import EmployeeMigration from './pages/EmployeeMigration'
 import Expenses from './pages/Expenses'
 import Invoices from './pages/Invoices'
 import InvoiceView from './pages/InvoiceView'
@@ -96,6 +98,8 @@ function Shell() {
               <Route path="employees" element={<Employees />} />
               <Route path="payroll" element={<Payroll />} />
               <Route path="positions" element={<Positions />} />
+              <Route path="departments" element={<Departments />} />
+              <Route path="employee-migration" element={<EmployeeMigration />} />
               <Route path="vendors" element={<Vendors />} />
               <Route path="assets" element={<Assets />} />
               <Route path="quotations" element={<Quotations />} />

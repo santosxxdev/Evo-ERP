@@ -194,6 +194,12 @@ export default function Employees() {
     if (modalParam === 'positions') {
       navigate('/positions', { replace: true })
     }
+    if (modalParam === 'depts') {
+      navigate('/departments', { replace: true })
+    }
+    if (modalParam === 'migration') {
+      navigate('/employee-migration', { replace: true })
+    }
   }, [modalParam, navigate])
 
   const [search, setSearch] = useState('')
@@ -1958,7 +1964,7 @@ function DepartmentsModal({ open, departments = [], onClose }) {
       open={open}
       onClose={onClose}
       wide
-      title="🏢 إدارة الأقسام (Departments)"
+      title="إدارة الأقسام (Departments)"
       footer={
         <Button variant="ghost" onClick={onClose}>
           إغلاق
@@ -2164,7 +2170,7 @@ function EmployeeMigrationModal({ open, employees = [], onClose }) {
       open={open}
       onClose={onClose}
       wide
-      title="⚙️ أداة ترقيم الموظفين (Dry-Run Migration Tool)"
+      title="أداة ترقيم الموظفين (Dry-Run Migration Tool)"
       footer={
         <div className="flex items-center justify-between w-full">
           <Button variant="ghost" onClick={onClose}>
