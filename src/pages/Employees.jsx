@@ -1,5 +1,5 @@
-import { useMemo, useState } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import { useMemo, useState, useEffect } from 'react'
+import { useSearchParams, useNavigate } from 'react-router-dom'
 import { useI18n } from '../i18n'
 import {
   COL,
@@ -186,8 +186,15 @@ export default function Employees() {
   const { rows: accounts } = useCollection(COL.accounts, 'code', 'asc')
   const { rows: accountingTxs } = useCollection(COL.accountingTransactions, 'transactionDate', 'desc')
 
+  const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
   const modalParam = searchParams.get('modal')
+
+  useEffect(() => {
+    if (modalParam === 'positions') {
+      navigate('/positions', { replace: true })
+    }
+  }, [modalParam, navigate])
 
   const [search, setSearch] = useState('')
   const [editing, setEditing] = useState(null)
@@ -2073,7 +2080,7 @@ function PositionsModal({ open, positions = [], departments = [], onClose }) {
       open={open}
       onClose={onClose}
       wide
-      title="💼 إدارة الوظائف والمسميات (Positions)"
+      title="إدارة الوظائف والمسميات (Positions)"
       footer={
         <Button variant="ghost" onClick={onClose}>
           إغلاق

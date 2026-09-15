@@ -19,6 +19,7 @@ import Invoices from './pages/Invoices'
 import InvoiceView from './pages/InvoiceView'
 import Login from './pages/Login'
 import Payroll from './pages/Payroll'
+import Positions from './pages/Positions'
 import Quotations from './pages/Quotations'
 import Reports from './pages/Reports'
 import ReportView from './pages/ReportView'
@@ -94,6 +95,7 @@ function Shell() {
               <Route path="clients/:id" element={<ClientProfile />} />
               <Route path="employees" element={<Employees />} />
               <Route path="payroll" element={<Payroll />} />
+              <Route path="positions" element={<Positions />} />
               <Route path="vendors" element={<Vendors />} />
               <Route path="assets" element={<Assets />} />
               <Route path="quotations" element={<Quotations />} />

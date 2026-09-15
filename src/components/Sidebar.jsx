@@ -49,8 +49,8 @@ export const NAV_GROUPS = [
     children: [
       { to: '/employees', labelKey: 'nav.employees.list' },
       { to: '/payroll', labelKey: 'nav.payroll' },
+      { to: '/positions', labelKey: 'nav.employees.positions' },
       { to: '/employees?modal=depts', labelKey: 'nav.employees.depts' },
-      { to: '/employees?modal=positions', labelKey: 'nav.employees.positions' },
       { to: '/employees?modal=migration', labelKey: 'nav.employees.renumber' },
     ],
   },

@@ -14,11 +14,11 @@ export const ROLES = ['admin', 'accountant', 'sales', 'viewer']
  */
 const SECTIONS = {
   admin: [
-    '/', '/clients', '/employees', '/payroll', '/vendors', '/assets', '/quotations', '/campaigns', '/invoices',
+    '/', '/clients', '/employees', '/payroll', '/positions', '/vendors', '/assets', '/quotations', '/campaigns', '/invoices',
     '/expenses', '/services', '/reports', '/accounting', '/vouchers', '/treasury', '/settings', '/users',
   ],
   accountant: [
-    '/', '/clients', '/employees', '/payroll', '/vendors', '/assets', '/quotations', '/campaigns', '/invoices',
+    '/', '/clients', '/employees', '/payroll', '/positions', '/vendors', '/assets', '/quotations', '/campaigns', '/invoices',
     '/expenses', '/services', '/reports', '/accounting', '/vouchers', '/treasury', '/settings',
   ],
   sales: ['/', '/clients', '/quotations', '/campaigns', '/invoices', '/services'],
