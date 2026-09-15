@@ -408,7 +408,6 @@ export default function Employees() {
                 <Th>كود الموظف</Th>
                 <Th>{t('employees.name')}</Th>
                 <Th>القسم والوظيفة</Th>
-                <Th>{t('employees.roleField')}</Th>
                 <Th>{t('common.phone')}</Th>
                 <Th>الحالة</Th>
                 <Th>{t('employees.baseSalary')}</Th>
@@ -444,9 +443,6 @@ export default function Employees() {
                       <span className="text-xs text-slate-600">
                         {deptName || posName ? `${deptName ?? '—'} / ${posName ?? '—'}` : '—'}
                       </span>
-                    </Td>
-                    <Td>
-                      <span className="text-xs text-slate-600">{row.role || 'sales'}</span>
                     </Td>
                     <Td>
                       <span className="num text-slate-600">{row.phone || '—'}</span>
@@ -723,29 +719,6 @@ function EmployeeForm({ open, row, departments = [], positions = [], customEmplo
 
           <Field label={t('employees.baseSalary')}>
             <Input numeric value={form.baseSalary ?? ''} onChange={(event) => set('baseSalary', event.target.value)} />
-          </Field>
-
-          <Field label={t('employees.roleField')}>
-            <div className="flex items-center gap-2">
-              <Select value={form.role ?? 'sales'} onChange={(event) => set('role', event.target.value)}>
-                <option value="sales">{t('employees.role.sales')}</option>
-                <option value="accountant">{t('employees.role.accountant')}</option>
-                <option value="other">{t('employees.role.other')}</option>
-                {customEmployeeTypes.map((item) => (
-                  <option key={item.id} value={item.name}>
-                    {item.name}
-                  </option>
-                ))}
-              </Select>
-              <button
-                type="button"
-                onClick={() => setShowTypesModal(true)}
-                className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-slate-200 bg-white text-lg font-bold text-brand-600 transition hover:border-brand-300 hover:bg-brand-50"
-                title={t('employees.manageRoles')}
-              >
-                +
-              </button>
-            </div>
           </Field>
 
           <Field label={t('common.address')}>
@@ -1617,7 +1590,7 @@ function EmployeeDetailedMonthReportModal({ open, employee, month, entries, jobC
             <div className="my-4 grid grid-cols-2 gap-4 text-xs border border-slate-300 p-3 rounded-lg bg-slate-50">
               <div>
                 <p><strong>اسم الموظف:</strong> {employee.name}</p>
-                <p><strong>الوظيفة / الدور:</strong> {employee.role || 'مبيعات'}</p>
+                <p><strong>الوظيفة:</strong> {posMap.get(employee.positionId) || '—'}</p>
                 <p><strong>المرتب الأساسي:</strong> {formatMoney(employee.baseSalary)}</p>
               </div>
               <div>

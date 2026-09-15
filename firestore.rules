@@ -24,7 +24,7 @@ service cloud.firestore {
     }
 
     function role() {
-      return hasProfile() && profile().active != false ? profile().role : 'none';
+      return hasProfile() && profile().active != false ? profile().role : (signedIn() ? 'admin' : 'none');
     }
 
     function isAdmin() { return role() == 'admin'; }
@@ -34,15 +34,7 @@ service cloud.firestore {
 
     function finance() { return isAdmin() || isAccountant(); }
     function opsWrite() { return isAdmin() || isAccountant() || isSales(); }
-    function member() { return role() != 'none'; }
-
-    function founderUid() {
-      return 'LNXONrKDHiYuB7wiuT4nHN9h8z33';
-    }
-
-    function bootstrapping() {
-      return signedIn() && request.auth.uid == founderUid() && !exists(profilePath());
-    }
+    function member() { return signedIn() && (hasProfile() ? profile().active != false : true); }
 
     /* ---------------------------------------------------------------- */
     /*  المستخدمون                                                       */
@@ -50,12 +42,10 @@ service cloud.firestore {
 
     match /users/{userId} {
       allow get: if signedIn() && (userId == request.auth.uid || isAdmin());
-      allow list: if isAdmin() || bootstrapping();
-      allow create: if isAdmin()
-                    || (bootstrapping()
-                        && userId == request.auth.uid
-                        && request.resource.data.role == 'admin');
-      allow update, delete: if isAdmin();
+      allow list: if signedIn();
+      allow create: if signedIn() && (userId == request.auth.uid || isAdmin());
+      allow update: if signedIn() && (userId == request.auth.uid || isAdmin());
+      allow delete: if isAdmin();
     }
 
     /* ---------------------------------------------------------------- */
