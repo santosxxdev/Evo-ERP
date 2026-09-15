@@ -9,6 +9,7 @@ import Layout from './components/Layout'
 import Bootstrap, { NoAccess } from './components/Bootstrap'
 import Accounting from './pages/Accounting'
 import Assets from './pages/Assets'
+import Attendance from './pages/Attendance'
 import Campaigns from './pages/Campaigns'
 import ClientProfile from './pages/ClientProfile'
 import Clients from './pages/Clients'
@@ -100,6 +101,7 @@ function Shell() {
               <Route path="positions" element={<Positions />} />
               <Route path="departments" element={<Departments />} />
               <Route path="employee-migration" element={<EmployeeMigration />} />
+              <Route path="attendance" element={<Attendance />} />
               <Route path="vendors" element={<Vendors />} />
               <Route path="assets" element={<Assets />} />
               <Route path="quotations" element={<Quotations />} />

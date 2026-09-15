@@ -28,6 +28,7 @@ import {
   updateDepartment,
   updatePosition,
 } from '../lib/hr'
+import { seedDemoData } from '../lib/seedData'
 import { formatDate, formatMoney, monthKey, round2, todayISO, toNumber } from '../lib/format'
 import {
   buildDetailedEmployeeMonthReport,
@@ -382,12 +383,32 @@ export default function Employees() {
     setRemoving(null)
   }
 
+  const [seeding, setSeeding] = useState(false)
+
+  async function handleSeedDemo() {
+    setSeeding(true)
+    try {
+      await seedDemoData()
+    } catch (err) {
+      console.error('Failed to seed demo data:', err)
+    } finally {
+      setSeeding(false)
+    }
+  }
+
   if (loading) return <Loading />
 
   return (
     <div>
       <PageHeader title={t('employees.title')} subtitle={t('employees.subtitle')}>
-        <Button onClick={() => setEditing({})}>+ {t('employees.add')}</Button>
+        <div className="flex gap-2">
+          {canModify && (
+            <Button onClick={handleSeedDemo} disabled={seeding} variant="secondary">
+              {seeding ? 'جاري التوليد...' : 'توليد بيانات تجريبية'}
+            </Button>
+          )}
+          <Button onClick={() => setEditing({})}>+ {t('employees.add')}</Button>
+        </div>
       </PageHeader>
 
       {error && (
@@ -400,7 +421,16 @@ export default function Employees() {
         <EmptyState
           title={t('employees.empty')}
           message={t('employees.emptyHint')}
-          action={<Button onClick={() => setEditing({})}>+ {t('employees.add')}</Button>}
+          action={
+            <div className="flex justify-center gap-3">
+              {canModify && (
+                <Button onClick={handleSeedDemo} disabled={seeding} variant="secondary">
+                  {seeding ? 'جاري التوليد...' : 'توليد بيانات تجريبية'}
+                </Button>
+              )}
+              <Button onClick={() => setEditing({})}>+ {t('employees.add')}</Button>
+            </div>
+          }
         />
       ) : (
         <>

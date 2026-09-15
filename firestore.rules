@@ -102,6 +102,44 @@ service cloud.firestore {
       allow write, delete: if opsWrite();
     }
 
+    match /departments/{id} {
+      allow read: if member();
+      allow write, delete: if opsWrite();
+    }
+
+    match /positions/{id} {
+      allow read: if member();
+      allow write, delete: if opsWrite();
+    }
+
+    match /attendance/{id} {
+      allow read: if member();
+      allow write, delete: if finance();
+    }
+
+    match /attendanceSettings/{id} {
+      allow read: if member();
+      allow write, delete: if finance();
+    }
+
+    match /employeeDeductions/{id} {
+      allow read: if member();
+      allow write, delete: if finance();
+    }
+
+    match /employeeAllowances/{id} {
+      allow read: if member();
+      allow write, delete: if finance();
+    }
+
+    match /payroll/{id} {
+      allow read, write, delete: if finance();
+    }
+
+    match /payrollRuns/{id} {
+      allow read, write, delete: if finance();
+    }
+
     match /assetCategories/{id} {
       allow read: if member();
       allow write, delete: if finance();

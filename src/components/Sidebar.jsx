@@ -52,6 +52,7 @@ export const NAV_GROUPS = [
       { to: '/positions', labelKey: 'nav.employees.positions' },
       { to: '/departments', labelKey: 'nav.employees.depts' },
       { to: '/employee-migration', labelKey: 'nav.employees.renumber' },
+      { to: '/attendance', labelKey: 'nav.employees.attendance' },
     ],
   },
   {
