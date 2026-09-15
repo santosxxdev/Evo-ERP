@@ -27,6 +27,8 @@
   "nav.employees.positions": "💼 الوظائف",
   "nav.employees.renumber": "⚙️ ترقيم الموظفين (Dry-Run)",
   "nav.payroll": "رواتب الموظفين",
+  "payroll.title": "رواتب الموظفين",
+  "payroll.subtitle": "إدارة كشوف ورواتب الموظفين والمسيرات والخصومات",
   "nav.invoices": "الفواتير",
   "nav.expenses": "المصروفات",
   "nav.services": "الخدمات",

@@ -504,8 +504,8 @@ export default function Payroll() {
     <div className="space-y-6">
       {/* PAGE HEADER */}
       <PageHeader
-        title={t('nav.payroll') || 'رواتب الموظفين'}
-        subtitle="Monthly employee payroll management, reporting & payslips"
+        title={t('payroll.title')}
+        subtitle={t('payroll.subtitle')}
       >
         <div className="flex flex-wrap items-center gap-3">
           {/* Period Selector */}

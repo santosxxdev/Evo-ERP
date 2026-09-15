@@ -27,6 +27,8 @@
   "nav.employees.positions": "💼 Positions",
   "nav.employees.renumber": "⚙️ Employee Renumbering (Dry-Run)",
   "nav.payroll": "Payroll",
+  "payroll.title": "Employee Payroll",
+  "payroll.subtitle": "Manage monthly payroll runs, allowances, deductions and payslips",
   "nav.invoices": "Invoices",
   "nav.expenses": "Expenses",
   "nav.services": "Services",

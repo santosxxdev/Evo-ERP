@@ -28,7 +28,6 @@ import {
 export const NAV_ITEMS = [
   { to: '/', labelKey: 'nav.dashboard', Icon: IconDashboard, end: true },
   { to: '/clients', labelKey: 'nav.clients', Icon: IconClients },
-  { to: '/payroll', labelKey: 'nav.payroll', Icon: IconExpenses },
   { to: '/vendors', labelKey: 'nav.vendors', Icon: IconVendors },
   { to: '/assets', labelKey: 'nav.assets', Icon: IconAssets },
   { to: '/invoices', labelKey: 'nav.invoices', Icon: IconInvoices },
@@ -49,6 +48,7 @@ export const NAV_GROUPS = [
     Icon: IconEmployees,
     children: [
       { to: '/employees', labelKey: 'nav.employees.list' },
+      { to: '/payroll', labelKey: 'nav.payroll' },
       { to: '/employees?modal=depts', labelKey: 'nav.employees.depts' },
       { to: '/employees?modal=positions', labelKey: 'nav.employees.positions' },
       { to: '/employees?modal=migration', labelKey: 'nav.employees.renumber' },

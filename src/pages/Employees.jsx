@@ -374,18 +374,7 @@ export default function Employees() {
   return (
     <div>
       <PageHeader title={t('employees.title')} subtitle={t('employees.subtitle')}>
-        <div className="flex flex-wrap items-center gap-2">
-          <Button variant="soft" onClick={() => setShowDeptsModal(true)}>
-            🏢 الأقسام
-          </Button>
-          <Button variant="soft" onClick={() => setShowPositionsModal(true)}>
-            💼 الوظائف
-          </Button>
-          <Button variant="soft" onClick={() => setShowMigrationModal(true)}>
-            ⚙️ ترقيم الموظفين (Dry-Run)
-          </Button>
-          <Button onClick={() => setEditing({})}>+ {t('employees.add')}</Button>
-        </div>
+        <Button onClick={() => setEditing({})}>+ {t('employees.add')}</Button>
       </PageHeader>
 
       {error && (
