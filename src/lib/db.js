@@ -36,7 +36,12 @@ export const COL = {
   employeeTypes: 'employeeTypes',
   departments: 'departments',
   positions: 'positions',
+  accounts: 'accounts',
   accountingTransactions: 'accountingTransactions',
+  journalEntries: 'journalEntries',
+  vouchers: 'journalEntries',
+  jobCosts: 'jobCosts',
+  salesPeriods: 'salesPeriods',
 }
 
 /* ------------------------------------------------------------------ */

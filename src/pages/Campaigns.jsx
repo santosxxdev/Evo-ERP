@@ -106,13 +106,14 @@ export default function Campaigns() {
             const taxRate = isTaxActive ? toNumber(settings.taxRate1 ?? settings.taxRate) : 0
             const totals = computeTotals({ items, discount: 0, taxRate, taxEnabled: isTaxActive })
             const client = clients.find((c) => c.id === updatedCampaign.clientId)
-            const employee = employees.find((e) => e.id === updatedCampaign.employeeId)
+            const effectiveEmployeeId = updatedCampaign.employeeId || client?.employeeId || null
+            const employee = employees.find((e) => e.id === effectiveEmployeeId)
             const exp = expectedCostOfItems(items, new Map(services.map((s) => [s.id, s])))
 
             const updatedInvoiceValues = {
               clientId: updatedCampaign.clientId,
               clientName: client?.name ?? updatedCampaign.clientName ?? '',
-              employeeId: updatedCampaign.employeeId ?? null,
+              employeeId: effectiveEmployeeId,
               employeeName: employee?.name ?? '',
               date: updatedCampaign.startDate || todayISO(),
               items,
@@ -137,6 +138,16 @@ export default function Campaigns() {
               uid: user?.uid,
             })
 
+            const existing = jobCosts.find((cost) => cost.invoiceId === editing.invoiceId && cost.auto === AUTO_COMMISSION)
+            const plan = planCommission({ invoice: { ...updatedInvoiceValues, id: editing.invoiceId }, employee, existing, monthInvoices: invoices })
+            if (plan.action === 'create') {
+              await createDoc(JOB_COSTS_COL, { ...plan.data, invoiceId: editing.invoiceId, clientId: updatedCampaign.clientId })
+            } else if (plan.action === 'update') {
+              await updateDocById(JOB_COSTS_COL, plan.id, plan.data)
+            } else if (plan.action === 'delete') {
+              await deleteDocById(JOB_COSTS_COL, plan.id)
+            }
+
             await recalcClientTotals(updatedCampaign.clientId, invoices)
           }
         }
@@ -144,8 +155,8 @@ export default function Campaigns() {
         await createDoc(CAMPAIGNS_COL, { ...values, invoiceId: null })
       }
     } catch (err) {
-      console.error('Campaign save error:', err)
-      alert(`❌ حدث خطأ أثناء حفظ تعديلات الحملة:\n\n${err?.message || 'خطأ غير معروف'}`)
+      console.error(err)
+      alert(`حدث خطأ أثناء حفظ تعديلات الحملة:\n\n${err?.message || 'خطأ غير معروف'}`)
     } finally {
       setBusy(false)
       setEditing(null)
@@ -168,15 +179,17 @@ export default function Campaigns() {
     const taxRate = isTaxActive ? toNumber(settings.taxRate1 ?? settings.taxRate) : 0
     const totals = computeTotals({ items, discount: 0, taxRate, taxEnabled: isTaxActive })
     const number = await nextInvoiceNumber(settings.invoicePrefix)
-    const employee = employees.find((e) => e.id === campaign.employeeId)
+    const client = clients.find((c) => c.id === campaign.clientId)
+    const effectiveEmployeeId = campaign.employeeId || client?.employeeId || null
+    const employee = employees.find((e) => e.id === effectiveEmployeeId)
     const exp = expectedCostOfItems(items, new Map(services.map((s) => [s.id, s])))
 
     const invoice = {
       number,
       clientId: campaign.clientId,
       clientName: campaign.clientName,
-      employeeId: campaign.employeeId ?? null,
-      employeeName: campaign.employeeName ?? '',
+      employeeId: effectiveEmployeeId,
+      employeeName: campaign.employeeName || employee?.name || '',
       date: campaign.startDate || todayISO(),
       items,
       subtotal: totals.subtotal,
@@ -204,7 +217,7 @@ export default function Campaigns() {
     
     await updateDocById(CAMPAIGNS_COL, campaign.id, { invoiceId: createdId })
 
-    const plan = planCommission({ invoice: { ...invoice, id: createdId }, employee, existing: null })
+    const plan = planCommission({ invoice: { ...invoice, id: createdId }, employee, existing: null, monthInvoices: invoices })
     if (plan.action === 'create') {
       await createDoc(JOB_COSTS_COL, { ...plan.data, invoiceId: createdId, clientId: campaign.clientId })
     }

@@ -201,10 +201,48 @@ export function profitByService(invoices, costs) {
  */
 export const AUTO_COMMISSION = 'commission'
 
-export function commissionFor(invoice, employee, customRate) {
-  const rate = customRate !== undefined && customRate !== null ? toNumber(customRate) : toNumber(employee?.commissionRate)
+/**
+ * حل إعدادات العمولة: لو الموظف commissionSource='department' تُقرأ من القسم،
+ * وإلا تُقرأ من الموظف مباشرة (الوضع الافتراضي للتوافقية).
+ */
+export function resolveCommissionConfig(employee, departments = []) {
+  if (employee?.commissionSource === 'department' && employee?.departmentId) {
+    const dept = departments.find(d => d.id === employee.departmentId)
+    if (dept?.commissionEnabled) return {
+      commissionRate: toNumber(dept.commissionRate),
+      targetAmount: toNumber(dept.targetAmount),
+      requireTargetForCommission: Boolean(dept.requireTargetForCommission),
+      overTargetCommissionEnabled: Boolean(dept.overTargetCommissionEnabled),
+      overTargetCommissionRate: toNumber(dept.overTargetCommissionRate),
+      source: 'department',
+    }
+  }
+  return {
+    commissionRate: toNumber(employee?.commissionRate),
+    targetAmount: toNumber(employee?.targetAmount),
+    requireTargetForCommission: Boolean(employee?.requireTargetForCommission),
+    overTargetCommissionEnabled: Boolean(employee?.overTargetCommissionEnabled),
+    overTargetCommissionRate: toNumber(employee?.overTargetCommissionRate),
+    source: 'custom',
+  }
+}
+
+/**
+ * حساب العمولة على أساس المبلغ المدفوع فعلياً:
+ * paidRatio = المدفوع / الإجمالي → العمولة تُحسب على أتعاب × paidRatio
+ */
+export function commissionFor(invoice, employee, customRate, departments) {
+  const config = departments ? resolveCommissionConfig(employee, departments) : null
+  const rate = customRate !== undefined && customRate !== null
+    ? toNumber(customRate)
+    : (config ? config.commissionRate : toNumber(employee?.commissionRate))
   if (!employee || rate <= 0) return 0
-  return round2((invoiceFees(invoice) * rate) / 100)
+  const fees = invoiceFees(invoice)
+  const total = toNumber(invoice?.total)
+  const paidAmount = toNumber(invoice?.paidAmount)
+  const paidRatio = total > 0 ? Math.min(paidAmount / total, 1) : 0
+  const commissionableFees = round2(fees * paidRatio)
+  return round2((commissionableFees * rate) / 100)
 }
 
 /**
@@ -271,18 +309,25 @@ export function calculateEmployeeTieredCommission(employee, monthlySalesValue) {
   }
 }
 
-/** حساب عمولة فاتورة بعينها مع مراعاة تسلسل الشرايح الشهرية للموظف */
-export function computeInvoiceCommission({ invoice, employee, monthInvoices = [] }) {
+/** حساب عمولة فاتورة بعينها مع مراعاة تسلسل الشرايح الشهرية للموظف والمدفوع */
+export function computeInvoiceCommission({ invoice, employee, monthInvoices = [], departments = [] }) {
   if (!employee || invoice?.cancelled) return 0
 
-  const baseRate = toNumber(employee.commissionRate)
-  const target = toNumber(employee.targetAmount)
-  const requireTarget = Boolean(employee.requireTargetForCommission)
-  const overEnabled = Boolean(employee.overTargetCommissionEnabled)
-  const overRate = overEnabled ? toNumber(employee.overTargetCommissionRate) : baseRate
+  const config = departments && departments.length > 0 ? resolveCommissionConfig(employee, departments) : null
+  const baseRate = config ? config.commissionRate : toNumber(employee.commissionRate)
+  const target = config ? config.targetAmount : toNumber(employee.targetAmount)
+  const requireTarget = config ? config.requireTargetForCommission : Boolean(employee.requireTargetForCommission)
+  const overEnabled = config ? config.overTargetCommissionEnabled : Boolean(employee.overTargetCommissionEnabled)
+  const overRate = overEnabled ? (config ? config.overTargetCommissionRate : toNumber(employee.overTargetCommissionRate)) : baseRate
+
+  const fees = invoiceFees(invoice)
+  const total = toNumber(invoice?.total)
+  const paidAmount = toNumber(invoice?.paidAmount)
+  const paidRatio = total > 0 ? Math.min(paidAmount / total, 1) : 0
+  const invPaidFees = round2(fees * paidRatio)
 
   if (target <= 0 && !overEnabled) {
-    return commissionFor(invoice, employee)
+    return commissionFor(invoice, employee, baseRate, departments)
   }
 
   const invMonth = monthKey(invoice.date)
@@ -290,11 +335,17 @@ export function computeInvoiceCommission({ invoice, employee, monthInvoices = []
     (inv) => inv.employeeId === employee.id && !inv.cancelled && monthKey(inv.date) === invMonth
   )
 
-  const totalMonthSales = round2(
-    sameMonthInvoices.reduce((sum, inv) => sum + invoiceFees(inv), 0)
+  const totalMonthPaidSales = round2(
+    sameMonthInvoices.reduce((sum, inv) => {
+      const f = invoiceFees(inv)
+      const t = toNumber(inv.total)
+      const p = toNumber(inv.paidAmount)
+      const r = t > 0 ? Math.min(p / t, 1) : 0
+      return sum + f * r
+    }, 0)
   )
 
-  if (target > 0 && requireTarget && totalMonthSales < target) {
+  if (target > 0 && requireTarget && totalMonthPaidSales < target) {
     return 0
   }
 
@@ -303,54 +354,65 @@ export function computeInvoiceCommission({ invoice, employee, monthInvoices = []
     return (a.id || '').localeCompare(b.id || '')
   })
 
-  let priorSales = 0
+  let priorPaidSales = 0
   for (const inv of sorted) {
-    const fees = invoiceFees(inv)
-    if (inv.id === invoice.id) {
-      const start = priorSales
-      const end = priorSales + fees
+    const f = invoiceFees(inv)
+    const t = toNumber(inv.total)
+    const p = toNumber(inv.paidAmount)
+    const r = t > 0 ? Math.min(p / t, 1) : 0
+    const thisPaidFees = round2(f * r)
 
-      const basePortion = target > 0 ? Math.max(0, Math.min(end, target) - start) : fees
+    if (inv.id === invoice.id) {
+      const start = priorPaidSales
+      const end = priorPaidSales + invPaidFees
+
+      const basePortion = target > 0 ? Math.max(0, Math.min(end, target) - start) : invPaidFees
       const overPortion = target > 0 ? Math.max(0, end - Math.max(start, target)) : 0
 
       return round2((basePortion * baseRate) / 100 + (overPortion * overRate) / 100)
     }
-    priorSales += fees
+    priorPaidSales += thisPaidFees
   }
 
-  const fees = invoiceFees(invoice)
-  const start = totalMonthSales
-  const end = totalMonthSales + fees
-  const basePortion = target > 0 ? Math.max(0, Math.min(end, target) - start) : fees
+  const start = totalMonthPaidSales
+  const end = totalMonthPaidSales + invPaidFees
+  const basePortion = target > 0 ? Math.max(0, Math.min(end, target) - start) : invPaidFees
   const overPortion = target > 0 ? Math.max(0, end - Math.max(start, target)) : 0
   return round2((basePortion * baseRate) / 100 + (overPortion * overRate) / 100)
 }
 
 /** يرجّع تعليمات المزامنة: إنشاء أو تعديل أو حذف تكلفة العمولة مع الحفاظ على النسبة التاريخية */
-export function planCommission({ invoice, employee, existing, monthInvoices = [] }) {
+export function planCommission({ invoice, employee, existing, monthInvoices = [], departments = [] }) {
+  if (invoice?.cancelled) {
+    return existing ? { action: 'delete', id: existing.id } : { action: 'none' }
+  }
+
   if (existing?.paid) {
     return { action: 'none' } // Paid/finalized commission records are strictly immutable
   }
 
+  const config = departments && departments.length > 0 ? resolveCommissionConfig(employee, departments) : null
   const rate = existing?.commissionRate !== undefined && existing?.commissionRate !== null
     ? toNumber(existing.commissionRate)
-    : toNumber(employee?.commissionRate)
+    : (config ? config.commissionRate : toNumber(employee?.commissionRate))
+
+  const target = config ? config.targetAmount : toNumber(employee?.targetAmount)
+  const overEnabled = config ? config.overTargetCommissionEnabled : Boolean(employee?.overTargetCommissionEnabled)
+  const overRate = config ? config.overTargetCommissionRate : toNumber(employee?.overTargetCommissionRate)
 
   let amount = 0
-  if (!invoice?.cancelled) {
-    if (employee && (employee.targetAmount > 0 || employee.overTargetCommissionEnabled)) {
-      amount = computeInvoiceCommission({ invoice, employee, monthInvoices })
-    } else {
-      amount = commissionFor(invoice, employee, rate)
-    }
+  if (employee && (target > 0 || overEnabled)) {
+    amount = computeInvoiceCommission({ invoice, employee, monthInvoices, departments })
+  } else {
+    amount = commissionFor(invoice, employee, rate, departments)
   }
 
   if (amount <= 0) {
     return existing ? { action: 'delete', id: existing.id } : { action: 'none' }
   }
 
-  const descRate = employee?.overTargetCommissionEnabled && employee?.targetAmount > 0
-    ? `${employee.name} — ${employee.commissionRate}% / ${employee.overTargetCommissionRate}%`
+  const descRate = overEnabled && target > 0
+    ? `${employee.name} — ${rate}% / ${overRate}%`
     : `${employee.name} — ${rate}%`
 
   const data = {
@@ -394,8 +456,9 @@ export function monthlyEmployeeTierBreakdowns(employee, invoices = []) {
 }
 
 /** مستحقات عمولة موظف */
-export function employeeCommission(employeeId, costs) {
-  const own = costs.filter((cost) => cost.employeeId === employeeId && cost.type === 'commission')
+export function employeeCommission(employeeId, costs, invoices = []) {
+  const cancelledInvoiceIds = new Set((invoices || []).filter((inv) => inv.cancelled).map((inv) => inv.id))
+  const own = costs.filter((cost) => cost.employeeId === employeeId && cost.type === 'commission' && (!cost.invoiceId || !cancelledInvoiceIds.has(cost.invoiceId)))
   const earned = sumCosts(own)
   const paid = sumCosts(own.filter((cost) => cost.paid))
   return { earned, paid, due: round2(earned - paid), count: own.length, rows: own }
@@ -406,8 +469,9 @@ export function employeeCommission(employeeId, costs) {
  * فيديو لعميل بعينه) — نفس فكرة تكلفة الشغل، لكن مربوطة بموظف
  * لا بمورد، فتظهر في كشفه الشهري بدل كشف أعمال مورد منفصل.
  */
-export function employeeJobPay(employeeId, costs) {
-  const own = costs.filter((cost) => cost.employeeId === employeeId && cost.type !== 'commission')
+export function employeeJobPay(employeeId, costs, invoices = []) {
+  const cancelledInvoiceIds = new Set((invoices || []).filter((inv) => inv.cancelled).map((inv) => inv.id))
+  const own = costs.filter((cost) => cost.employeeId === employeeId && cost.type !== 'commission' && (!cost.invoiceId || !cancelledInvoiceIds.has(cost.invoiceId)))
   const earned = sumCosts(own)
   const paid = sumCosts(own.filter((cost) => cost.paid))
   return { earned, paid, due: round2(earned - paid), count: own.length, rows: own }
@@ -609,18 +673,19 @@ export function formalVendorBalance(vendorId, purchaseInvoices = [], supplierPay
   }
 }
 
-/** تقرير مفصّل وشامل لكشف حساب الموظف عن شهر معين بكل حركاته */
-export function buildDetailedEmployeeMonthReport({ employee, month, entries = [], jobCosts = [], invoices = [] }) {
+/** تقرير مفصّل وشامل لكشف حساب الموظف عن شهر معين بكل حركاته والسندات المرتبطة به */
+export function buildDetailedEmployeeMonthReport({ employee, month, entries = [], jobCosts = [], invoices = [], vouchers = [] }) {
   if (!employee || !month) return null
 
+  const cancelledInvoiceIds = new Set((invoices || []).filter((inv) => inv.cancelled).map((inv) => inv.id))
   const monthEntries = entries.filter(
     (e) => e.employeeId === employee.id && monthKey(e.date) === month
   )
   const monthCommissions = jobCosts.filter(
-    (c) => c.employeeId === employee.id && c.type === 'commission' && monthKey(c.date) === month
+    (c) => c.employeeId === employee.id && c.type === 'commission' && monthKey(c.date) === month && (!c.invoiceId || !cancelledInvoiceIds.has(c.invoiceId))
   )
   const monthJobPays = jobCosts.filter(
-    (c) => c.employeeId === employee.id && c.type !== 'commission' && monthKey(c.date) === month
+    (c) => c.employeeId === employee.id && c.type !== 'commission' && monthKey(c.date) === month && (!c.invoiceId || !cancelledInvoiceIds.has(c.invoiceId))
   )
 
   const targetBonusInfo = monthlyTargetBonus(employee, invoices, month)
@@ -635,6 +700,9 @@ export function buildDetailedEmployeeMonthReport({ employee, month, entries = []
   let bonusTotal = 0
   let raiseTotal = 0
   let deductionTotal = 0
+  let commissionTotal = 0
+  let commissionPaidTotal = 0
+  let voucherPaidTotal = 0
 
   const movementRows = []
 
@@ -644,6 +712,10 @@ export function buildDetailedEmployeeMonthReport({ employee, month, entries = []
     else if (e.type === 'bonus') bonusTotal += amt
     else if (e.type === 'raise') raiseTotal += amt
     else if (e.type === 'deduction') deductionTotal += amt
+    else if (e.type === 'commission') {
+      commissionTotal += amt
+      if (e.paid) commissionPaidTotal += amt
+    }
 
     movementRows.push({
       id: e.id,
@@ -660,8 +732,48 @@ export function buildDetailedEmployeeMonthReport({ employee, month, entries = []
     })
   }
 
-  let commissionTotal = 0
-  let commissionPaidTotal = 0
+  // إذا لم يتم تسجيل قيد مرتب يدوي للشهر، استخدم المرتب الأساسي من بيانات الموظف
+  if (salaryTotal === 0 && (employee.baseSalary || employee.basicSalary)) {
+    salaryTotal = toNumber(employee.baseSalary || employee.basicSalary)
+  }
+
+  for (const v of vouchers) {
+    if (monthKey(v.date) !== month) continue
+    const debit = toNumber(v.debit)
+    const credit = toNumber(v.credit)
+
+    const isDeduction = v.kind === 'deduction' || v.voucherType === 'deduction'
+    const isBonus = v.kind === 'bonus' || (v.voucherType === 'manual' && credit > 0 && !v.isAdvance)
+    const isPayment = v.voucherType === 'payment' || v.kind === 'payment'
+    const isReceipt = v.voucherType === 'receipt' || v.kind === 'receipt'
+    const isAdvance = v.isAdvance
+
+    if (isDeduction) {
+      const amt = debit > 0 ? debit : credit
+      deductionTotal += amt
+    } else if (isBonus) {
+      const amt = credit > 0 ? credit : debit
+      bonusTotal += amt
+    } else if (isPayment) {
+      const amt = debit > 0 ? debit : credit
+      voucherPaidTotal += amt
+    }
+
+    movementRows.push({
+      id: `voucher-${v.voucherId || v.id}-${v.date}-${movementRows.length}`,
+      date: v.date,
+      type: isAdvance ? 'advance' : isDeduction ? 'deduction' : isBonus ? 'bonus' : isPayment ? 'voucherPayment' : isReceipt ? 'voucherReceipt' : 'voucher',
+      ref: v.voucherNumber || 'سند',
+      description: v.description || (isAdvance ? 'سند صرف سلفة' : isPayment ? 'سند صرف نقدية' : isReceipt ? 'سند قبض نقدية' : isDeduction ? 'سند خصم' : isBonus ? 'سند زيادة/مكافأة' : 'سند قيد'),
+      earned: isBonus ? (credit > 0 ? credit : debit) : 0,
+      deduction: isDeduction ? (debit > 0 ? debit : credit) : 0,
+      paid: isPayment ? (debit > 0 ? debit : credit) : isReceipt ? -(credit > 0 ? credit : debit) : 0,
+      paidStatus: true,
+      paidDate: v.date,
+      source: 'voucher',
+    })
+  }
+
   for (const c of monthCommissions) {
     const amt = toNumber(c.amount)
     commissionTotal += amt
@@ -680,6 +792,11 @@ export function buildDetailedEmployeeMonthReport({ employee, month, entries = []
       paidDate: c.paidDate || null,
       source: 'invoice',
     })
+  }
+
+  // إذا كانت هناك عمولة محسوبة من الفواتير (نظام الشرائح) ولم تُسجل كـ jobCost
+  if (commissionTotal === 0 && tierCalc?.totalCommission > 0) {
+    commissionTotal = tierCalc.totalCommission
   }
 
   let jobPayTotal = 0
@@ -713,7 +830,8 @@ export function buildDetailedEmployeeMonthReport({ employee, month, entries = []
   const totalPaid = round2(
     monthEntries.filter((e) => e.paid).reduce((sum, e) => sum + signedAmount(e.type, e.amount), 0) +
     commissionPaidTotal +
-    jobPayPaidTotal
+    jobPayPaidTotal +
+    voucherPaidTotal
   )
 
   const dueBalance = round2(grossEntitlements - totalPaid)

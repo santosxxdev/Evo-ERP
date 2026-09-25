@@ -9,3 +9,6 @@ firebase-debug.log
 scratch/
 test*_results.json
 bypass_search.json
+backups/
+backup-*/
+test.txt

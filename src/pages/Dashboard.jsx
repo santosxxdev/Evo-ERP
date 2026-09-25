@@ -28,6 +28,7 @@ export default function Dashboard() {
 
   const { rows: invoices, loading } = useCollection(COL.invoices, 'date', 'desc')
   const { rows: expenses } = useCollection(COL.expenses, 'date', 'desc', finance)
+  const { rows: vouchers } = useCollection(COL.vouchers, 'date', 'desc', finance)
   const { rows: clients } = useCollection(COL.clients, 'name', 'asc')
   const { rows: expenseCategories } = useCollection(COL.expenseCategories, 'name', 'asc', finance)
   const categoryMap = useLookup(expenseCategories)
@@ -35,10 +36,42 @@ export default function Dashboard() {
   const today = todayISO()
   const monthStart = monthStartISO()
 
+  // تجميع المصروفات الحقيقية: سجلات المصروفات + سندات الصرف (Payment Vouchers)
+  const unifiedExpenses = useMemo(() => {
+    if (!finance) return []
+    const list = []
+
+    for (const exp of expenses) {
+      if (isClientFunded(exp, categoryMap)) continue
+      list.push({
+        id: exp.id,
+        date: exp.date,
+        amount: toNumber(exp.amount),
+        source: 'expense',
+      })
+    }
+
+    for (const v of vouchers) {
+      if (v.type !== 'payment') continue
+      // تجنب التكرار إذا كان سند الصرف مشتقاً من نفس سجل المصروف
+      if (v.sourceType === 'expense' && v.sourceId && expenses.some((e) => e.id === v.sourceId)) {
+        continue
+      }
+      list.push({
+        id: v.id,
+        date: v.date,
+        amount: toNumber(v.totalDebit || v.amount || 0),
+        source: 'voucher',
+      })
+    }
+
+    return list
+  }, [finance, expenses, vouchers, categoryMap])
+
   const stats = useMemo(() => {
     const monthInvoices = invoices.filter((invoice) => isWithin(invoice.date, monthStart, today))
-    const monthExpenses = expenses.filter(
-      (expense) => isWithin(expense.date, monthStart, today) && !isClientFunded(expense, categoryMap),
+    const monthExpenses = unifiedExpenses.filter((expense) =>
+      isWithin(expense.date, monthStart, today),
     )
 
     const revenue = monthInvoices.reduce((sum, invoice) => sum + toNumber(invoice.total), 0)
@@ -49,7 +82,7 @@ export default function Dashboard() {
     const due = invoices.reduce((sum, invoice) => sum + Math.max(remainingOf(invoice), 0), 0)
 
     return { revenue, fees, collected, spent, due, net: fees - spent }
-  }, [invoices, expenses, categoryMap, monthStart, today])
+  }, [invoices, unifiedExpenses, monthStart, today])
 
   const chart = useMemo(() => {
     const months = lastMonths(6)
@@ -60,13 +93,12 @@ export default function Dashboard() {
       const position = index.get(monthKey(invoice.date))
       if (position !== undefined) data[position].revenue += toNumber(invoice.total)
     }
-    for (const expense of expenses) {
-      if (isClientFunded(expense, categoryMap)) continue
+    for (const expense of unifiedExpenses) {
       const position = index.get(monthKey(expense.date))
       if (position !== undefined) data[position].expenses += toNumber(expense.amount)
     }
     return data
-  }, [invoices, expenses, categoryMap])
+  }, [invoices, unifiedExpenses])
 
   const chartMax = Math.max(1, ...chart.flatMap((entry) => [entry.revenue, entry.expenses]))
 
@@ -129,13 +161,15 @@ export default function Dashboard() {
         />
         {finance && (
           <>
-            <StatCard
-              label={t('dash.expenses')}
-              value={formatMoney(stats.spent)}
-              suffix={t('common.currency')}
-              tone="text-rose-600 bg-rose-50"
-              Icon={IconExpenses}
-            />
+            <Link to="/vouchers?type=payment" title="عرض تفاصيل سندات الصرف والمصروفات" className="block transition-transform hover:scale-[1.01]">
+              <StatCard
+                label={t('dash.expenses')}
+                value={formatMoney(stats.spent)}
+                suffix={t('common.currency')}
+                tone="text-rose-600 bg-rose-50"
+                Icon={IconExpenses}
+              />
+            </Link>
             <StatCard
               label={t('dash.profit')}
               value={formatMoney(stats.net)}

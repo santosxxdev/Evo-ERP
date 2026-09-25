@@ -176,16 +176,6 @@ export default function Attendance() {
         subtitle={t('attendance.subtitle')}
         action={
           <div className="flex flex-wrap gap-2">
-            {canModify && (
-              <>
-                <Button onClick={handleClearDemoData} disabled={clearing || seeding} variant="danger">
-                  {clearing ? 'جاري الحذف...' : 'حذف البيانات التجريبية'}
-                </Button>
-                <Button onClick={handleSeedDemoData} disabled={seeding || clearing} variant="secondary">
-                  {seeding ? t('attendance.seeding') : t('attendance.seedDemo')}
-                </Button>
-              </>
-            )}
             <Button onClick={generateAttendanceExcelTemplate} variant="ghost">
               {t('attendance.downloadTemplate')}
             </Button>

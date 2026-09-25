@@ -237,9 +237,9 @@ export function StatCard({ label, value, suffix, tone = 'text-brand-600 bg-brand
 
 /* -------------------------------- البحث ---------------------------------- */
 
-export function SearchInput({ value, onChange, placeholder }) {
+export function SearchInput({ value, onChange, placeholder, className = 'w-full sm:w-72' }) {
   return (
-    <div className="relative w-full sm:w-72">
+    <div className={`relative ${className}`}>
       <span className="pointer-events-none absolute inset-y-0 start-3 grid place-items-center text-slate-400">
         <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2">
           <circle cx="11" cy="11" r="7" />
@@ -248,9 +248,21 @@ export function SearchInput({ value, onChange, placeholder }) {
       </span>
       <input
         value={value}
-        onChange={(event) => onChange(event.target.value)}
+        onChange={(event) => {
+          if (typeof onChange === 'function') {
+            const val = event.target.value
+            // Hybrid object supporting string behavior AND .target.value
+            const hybrid = Object.assign(new String(val), {
+              target: { value: val },
+              currentTarget: { value: val },
+              toString: () => val,
+              valueOf: () => val,
+            })
+            onChange(hybrid)
+          }
+        }}
         placeholder={placeholder}
-        className="w-full rounded-xl border border-slate-200 bg-white py-2.5 pe-4 ps-9 text-sm outline-none
+        className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white py-2.5 pe-4 ps-9 text-sm outline-none
                    transition placeholder:text-slate-400 focus:border-brand-500 focus:ring-4 focus:ring-brand-500/10"
       />
     </div>

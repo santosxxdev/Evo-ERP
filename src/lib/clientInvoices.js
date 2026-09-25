@@ -17,14 +17,20 @@ function roundMoney(amount) {
   return Math.round((Number(amount || 0) + Number.EPSILON) * 100) / 100
 }
 
-async function resolveAccountByRole(role) {
+async function resolveAccountByRole(role, optional = false) {
   const q = query(collection(db, 'accounts'), where('role', '==', role), limit(10))
   const snap = await getDocs(q)
-  if (snap.empty) throw new Error(`الحساب المخصص لـ '${role}' غير موجود في شجرة الحسابات.`)
+  if (snap.empty) {
+    if (optional) return null
+    throw new Error(`الحساب المخصص لـ '${role}' غير موجود في شجرة الحسابات.`)
+  }
   const activeDoc = snap.docs.find(
     (d) => !d.data().archived && d.data().active !== false && !d.data().isGroup,
   )
-  if (!activeDoc) throw new Error(`حساب '${role}' معطل أو مؤرشف أو حساب رئيسي (مجموعة).`)
+  if (!activeDoc) {
+    if (optional) return null
+    throw new Error(`حساب '${role}' معطل أو مؤرشف أو حساب رئيسي (مجموعة).`)
+  }
   return { id: activeDoc.id, ...activeDoc.data() }
 }
 
@@ -80,6 +86,7 @@ export async function createInvoiceClientSide({ values, number, payment, uid }) 
   const revenueAcct = await resolveAccountByRole('revenue')
   const adHeldAcct = await resolveAccountByRole('adBudgetHeld')
   const taxAcct = await resolveAccountByRole('tax')
+  const adTreasuryAcct = await resolveAccountByRole('adTreasury', true)
 
   let treasuryAccount = null
   const paymentAmount = payment ? roundMoney(payment.amount) : 0
@@ -93,7 +100,16 @@ export async function createInvoiceClientSide({ values, number, payment, uid }) 
     const invoiceRef = doc(collection(db, 'invoices'))
     createdInvoiceId = invoiceRef.id
 
-    const lines = [{ accountId: receivableAcct.id, debit: total, credit: 0 }]
+    const lines = [
+      {
+        accountId: receivableAcct.id,
+        debit: total,
+        credit: 0,
+        subLedgerType: 'client',
+        subLedgerId: values.clientId,
+        subLedgerName: values.clientName || '',
+      },
+    ]
     if (fees > 0) lines.push({ accountId: revenueAcct.id, debit: 0, credit: fees })
     if (adBudget > 0) lines.push({ accountId: adHeldAcct.id, debit: 0, credit: adBudget })
     if (taxAmount > 0) lines.push({ accountId: taxAcct.id, debit: 0, credit: taxAmount })
@@ -124,16 +140,38 @@ export async function createInvoiceClientSide({ values, number, payment, uid }) 
       })
 
       const paymentTxRef = doc(collection(db, 'accountingTransactions'))
+
+      const paymentLines = []
+      if (adBudget > 0 && adTreasuryAcct && total > 0) {
+        const adRatio = Math.min(1, Math.max(0, adBudget / total))
+        const adPayment = roundMoney(paymentAmount * adRatio)
+        const feesPayment = roundMoney(paymentAmount - adPayment)
+
+        if (feesPayment > 0) {
+          paymentLines.push({ accountId: treasuryAccount.id, debit: feesPayment, credit: 0 })
+        }
+        if (adPayment > 0) {
+          paymentLines.push({ accountId: adTreasuryAcct.id, debit: adPayment, credit: 0 })
+        }
+      } else {
+        paymentLines.push({ accountId: treasuryAccount.id, debit: paymentAmount, credit: 0 })
+      }
+      paymentLines.push({
+        accountId: receivableAcct.id,
+        debit: 0,
+        credit: paymentAmount,
+        subLedgerType: 'client',
+        subLedgerId: values.clientId,
+        subLedgerName: values.clientName || '',
+      })
+
       t.set(paymentTxRef, {
         idempotencyKey: `payment:${paymentRef.id}:post`,
         transactionDate: payment.date || values.date,
         sourceType: 'payment',
         sourceId: paymentRef.id,
         action: 'payment',
-        lines: [
-          { accountId: treasuryAccount.id, debit: paymentAmount, credit: 0 },
-          { accountId: receivableAcct.id, debit: 0, credit: paymentAmount },
-        ],
+        lines: paymentLines,
         totalDebit: paymentAmount,
         totalCredit: paymentAmount,
         createdBy: uid || null,
@@ -166,6 +204,7 @@ export async function createPaymentClientSide({ invoiceId, payment, uid }) {
 
   const receivableAcct = await resolveAccountByRole('receivable')
   const treasuryAccount = await resolvePaymentMethodAccount(payment.methodId)
+  const adTreasuryAcct = await resolveAccountByRole('adTreasury', true)
 
   await runTransaction(db, async (t) => {
     const invoiceRef = doc(db, 'invoices', invoiceId)
@@ -173,6 +212,9 @@ export async function createPaymentClientSide({ invoiceId, payment, uid }) {
     if (!invoiceDoc.exists()) throw new Error('الفاتورة غير موجودة.')
     const invData = invoiceDoc.data()
     if (invData.cancelled) throw new Error('لا يمكن تسجيل دفعة على فاتورة ملغاة.')
+
+    const total = roundMoney(invData.total || 0)
+    const adBudget = roundMoney(invData.adBudgetTotal || 0)
 
     const paymentRef = doc(collection(db, 'invoices', invoiceId, 'payments'))
     t.set(paymentRef, {
@@ -183,16 +225,38 @@ export async function createPaymentClientSide({ invoiceId, payment, uid }) {
     })
 
     const paymentTxRef = doc(collection(db, 'accountingTransactions'))
+
+    const paymentLines = []
+    if (adBudget > 0 && adTreasuryAcct && total > 0) {
+      const adRatio = Math.min(1, Math.max(0, adBudget / total))
+      const adPayment = roundMoney(paymentAmount * adRatio)
+      const feesPayment = roundMoney(paymentAmount - adPayment)
+
+      if (feesPayment > 0) {
+        paymentLines.push({ accountId: treasuryAccount.id, debit: feesPayment, credit: 0 })
+      }
+      if (adPayment > 0) {
+        paymentLines.push({ accountId: adTreasuryAcct.id, debit: adPayment, credit: 0 })
+      }
+    } else {
+      paymentLines.push({ accountId: treasuryAccount.id, debit: paymentAmount, credit: 0 })
+    }
+    paymentLines.push({
+      accountId: receivableAcct.id,
+      debit: 0,
+      credit: paymentAmount,
+      subLedgerType: 'client',
+      subLedgerId: invData.clientId,
+      subLedgerName: invData.clientName || '',
+    })
+
     t.set(paymentTxRef, {
       idempotencyKey: `payment:${paymentRef.id}:post`,
       transactionDate: payment.date || invData.date,
       sourceType: 'payment',
       sourceId: paymentRef.id,
       action: 'payment',
-      lines: [
-        { accountId: treasuryAccount.id, debit: paymentAmount, credit: 0 },
-        { accountId: receivableAcct.id, debit: 0, credit: paymentAmount },
-      ],
+      lines: paymentLines,
       totalDebit: paymentAmount,
       totalCredit: paymentAmount,
       createdBy: uid || null,
@@ -211,6 +275,15 @@ export async function createPaymentClientSide({ invoiceId, payment, uid }) {
  */
 export async function reversePaymentClientSide({ invoiceId, paymentId, uid }) {
   if (!invoiceId || !paymentId) throw new Error('رقم الفاتورة ورمز الدفعة مطلوبان.')
+
+  const ptxSnap = await getDocs(
+    query(
+      collection(db, 'accountingTransactions'),
+      where('sourceType', '==', 'payment'),
+      where('sourceId', '==', paymentId)
+    )
+  )
+
   await runTransaction(db, async (t) => {
     const invoiceRef = doc(db, 'invoices', invoiceId)
     const invoiceDoc = await t.get(invoiceRef)
@@ -225,6 +298,10 @@ export async function reversePaymentClientSide({ invoiceId, paymentId, uid }) {
     const paymentAmount = roundMoney(payData.amount)
     t.delete(paymentRef)
 
+    for (const ptxDoc of ptxSnap.docs) {
+      t.delete(ptxDoc.ref)
+    }
+
     const currentPaid = roundMoney(invData.paidAmount || 0)
     t.update(invoiceRef, { paidAmount: Math.max(0, roundMoney(currentPaid - paymentAmount)) })
   })
@@ -237,6 +314,20 @@ export async function reversePaymentClientSide({ invoiceId, paymentId, uid }) {
  */
 export async function editInvoiceClientSide({ invoiceId, values, uid }) {
   if (!invoiceId) throw new Error('رقم الفاتورة مطلوب.')
+
+  const receivableAcct = await resolveAccountByRole('receivable')
+  const revenueAcct = await resolveAccountByRole('revenue')
+  const adHeldAcct = await resolveAccountByRole('adBudgetHeld')
+  const taxAcct = await resolveAccountByRole('tax')
+
+  const invTxSnap = await getDocs(
+    query(
+      collection(db, 'accountingTransactions'),
+      where('sourceType', '==', 'invoice'),
+      where('sourceId', '==', invoiceId)
+    )
+  )
+
   await runTransaction(db, async (t) => {
     const invoiceRef = doc(db, 'invoices', invoiceId)
     const invoiceDoc = await t.get(invoiceRef)
@@ -247,6 +338,48 @@ export async function editInvoiceClientSide({ invoiceId, values, uid }) {
     const total = roundMoney(values.total || 0)
     const adBudget = roundMoney(values.adBudgetTotal || 0)
     const taxAmount = roundMoney(values.taxAmount || 0)
+    const fees = roundMoney(total - adBudget - taxAmount)
+
+    const lines = [
+      {
+        accountId: receivableAcct.id,
+        debit: total,
+        credit: 0,
+        subLedgerType: 'client',
+        subLedgerId: values.clientId || invData.clientId,
+        subLedgerName: values.clientName || invData.clientName || '',
+      },
+    ]
+    if (fees > 0) lines.push({ accountId: revenueAcct.id, debit: 0, credit: fees })
+    if (adBudget > 0) lines.push({ accountId: adHeldAcct.id, debit: 0, credit: adBudget })
+    if (taxAmount > 0) lines.push({ accountId: taxAcct.id, debit: 0, credit: taxAmount })
+
+    if (!invTxSnap.empty) {
+      for (const txDoc of invTxSnap.docs) {
+        t.update(txDoc.ref, {
+          transactionDate: values.date || invData.date,
+          lines,
+          totalDebit: total,
+          totalCredit: total,
+          updatedAt: serverTimestamp(),
+          updatedBy: uid || null,
+        })
+      }
+    } else {
+      const invoiceTxRef = doc(collection(db, 'accountingTransactions'))
+      t.set(invoiceTxRef, {
+        idempotencyKey: `invoice:${invoiceId}:issue`,
+        transactionDate: values.date || invData.date,
+        sourceType: 'invoice',
+        sourceId: invoiceId,
+        action: 'create',
+        lines,
+        totalDebit: total,
+        totalCredit: total,
+        createdBy: uid || null,
+        createdAt: serverTimestamp(),
+      })
+    }
 
     t.update(invoiceRef, {
       ...values,
@@ -266,6 +399,12 @@ export async function editInvoiceClientSide({ invoiceId, values, uid }) {
  */
 export async function cancelInvoiceClientSide({ invoiceId, cancelReason, cancelledDate, uid }) {
   if (!invoiceId) throw new Error('رقم الفاتورة مطلوب.')
+
+  // Fetch linked jobCosts (commissions, etc.) to delete them on cancellation
+  const jcSnap = await getDocs(
+    query(collection(db, 'jobCosts'), where('invoiceId', '==', invoiceId))
+  )
+
   await runTransaction(db, async (t) => {
     const invoiceRef = doc(db, 'invoices', invoiceId)
     const invoiceDoc = await t.get(invoiceRef)
@@ -279,6 +418,11 @@ export async function cancelInvoiceClientSide({ invoiceId, cancelReason, cancell
       cancelledAt: serverTimestamp(),
       cancelledBy: uid || null,
     })
+
+    // Delete any commissions/jobCosts tied to this cancelled invoice
+    for (const jcDoc of jcSnap.docs) {
+      t.delete(jcDoc.ref)
+    }
   })
 
   return { success: true }

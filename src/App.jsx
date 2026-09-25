@@ -32,7 +32,11 @@ import Splash from './pages/Splash'
 import Treasury from './pages/Treasury'
 import Users from './pages/Users'
 import Vendors from './pages/Vendors'
+import VendorStatement from './pages/VendorStatement'
 import Vouchers from './pages/Vouchers'
+import CommissionRules from './pages/CommissionRules'
+import SalesCommissions from './pages/SalesCommissions'
+import SalesPeriods from './pages/SalesPeriods'
 
 const SPLASH_MS = 1900
 
@@ -46,7 +50,6 @@ function RedirectIfAuthed() {
   return user ? <Navigate to="/" replace /> : <Outlet />
 }
 
-/** يمنع فتح قسم لا يسمح به دور المستخدم */
 function RequireSection() {
   const { role } = useAuth()
   const { pathname } = useLocation()
@@ -54,10 +57,7 @@ function RequireSection() {
   return canAccess(role, path) ? <Outlet /> : <Navigate to="/" replace />
 }
 
-/**
- * بوابة الصلاحيات: قبل أي شيء نتأكد أن للمستخدم ملفًا ودورًا.
- * أول مستخدم على الإطلاق يسجّل نفسه مديرًا، ومن بعده لا أحد يدخل بلا ملف.
- */
+
 function Gate() {
   const { profile, profileLoading, active } = useAuth()
   const { rows: users, loading: usersLoading } = useCollection(USERS_COL, 'name', 'asc', !profile)
@@ -103,6 +103,7 @@ function Shell() {
               <Route path="employee-migration" element={<EmployeeMigration />} />
               <Route path="attendance" element={<Attendance />} />
               <Route path="vendors" element={<Vendors />} />
+              <Route path="vendor-statement" element={<VendorStatement />} />
               <Route path="assets" element={<Assets />} />
               <Route path="quotations" element={<Quotations />} />
               <Route path="invoices" element={<Invoices />} />
@@ -118,6 +119,9 @@ function Shell() {
               <Route path="vouchers" element={<Vouchers />} />
               <Route path="treasury" element={<Treasury />} />
               <Route path="users" element={<Users />} />
+              <Route path="sales-commissions" element={<SalesCommissions />} />
+              <Route path="sales-periods" element={<SalesPeriods />} />
+              <Route path="commission-rules" element={<CommissionRules />} />
               <Route path="settings" element={<Navigate to="/settings/expense-categories" replace />} />
               <Route path="settings/:section" element={<Settings />} />
             </Route>

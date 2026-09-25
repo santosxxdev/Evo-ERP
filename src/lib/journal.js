@@ -42,6 +42,7 @@ export const VOUCHER_SHAPES = {
   tax: { debitRole: 'tax', creditRole: 'cash' },
   payment: { debitRole: 'otherExpense', creditRole: 'cash' },
   receipt: { debitRole: 'cash', creditRole: 'revenue' },
+  transfer: { debitRole: 'cash', creditRole: 'cash' },
 }
 
 export async function nextVoucherNumber() {
@@ -116,6 +117,88 @@ export async function createVoucher({ date, type, description, lines, notes = ''
   })
 
   return voucherRef.id
+}
+
+export async function updateVoucher(voucherId, { date, type, description, lines, notes = '', uid }) {
+  if (!voucherId) throw new Error('معرف السند مطلوب للتعديل.')
+
+  const formattedLines = lines
+    .filter((entry) => entry.accountId && (toNumber(entry.debit) > 0 || toNumber(entry.credit) > 0))
+    .map((entry) => ({
+      accountId: entry.accountId,
+      debit: round2(entry.debit),
+      credit: round2(entry.credit),
+      ...(entry.subLedgerId
+        ? {
+            subLedgerType: entry.subLedgerType || null,
+            subLedgerId: entry.subLedgerId,
+            subLedgerName: entry.subLedgerName || '',
+          }
+        : {}),
+    }))
+
+  if (formattedLines.length < 2) {
+    throw new Error('يجب إدخال طرفين على الأقل للقيد (مدين ودائن).')
+  }
+
+  const totalDebit = formattedLines.reduce((sum, line) => sum + line.debit, 0)
+  const totalCredit = formattedLines.reduce((sum, line) => sum + line.credit, 0)
+  if (Math.abs(totalDebit - totalCredit) > 0.01) {
+    throw new Error('القيد غير متوازن: إجمالي المدين يجب أن يساوي إجمالي الدائن.')
+  }
+
+  const voucherRef = doc(db, JOURNAL_COL, voucherId)
+
+  const q = query(
+    collection(db, 'accountingTransactions'),
+    where('sourceType', '==', 'voucher'),
+    where('sourceId', '==', voucherId),
+  )
+  const txSnap = await getDocs(q)
+  const txDocs = txSnap.docs.filter((d) => !HISTORICAL_16_IDS.has(d.id))
+
+  await runTransaction(db, async (t) => {
+    t.update(voucherRef, {
+      date,
+      type,
+      description,
+      lines: formattedLines,
+      notes,
+      totalDebit,
+      totalCredit,
+      updatedBy: uid || null,
+      updatedAt: serverTimestamp(),
+    })
+
+    if (txDocs.length > 0) {
+      const primaryTx = txDocs[0]
+      t.update(primaryTx.ref, {
+        transactionDate: date,
+        lines: formattedLines,
+        totalDebit,
+        totalCredit,
+        updatedBy: uid || null,
+        updatedAt: serverTimestamp(),
+      })
+      for (let i = 1; i < txDocs.length; i++) {
+        t.delete(txDocs[i].ref)
+      }
+    } else {
+      const newTxRef = doc(collection(db, 'accountingTransactions'))
+      t.set(newTxRef, {
+        idempotencyKey: `voucher:${voucherId}:post`,
+        transactionDate: date,
+        sourceType: 'voucher',
+        sourceId: voucherId,
+        action: 'manual',
+        lines: formattedLines,
+        totalDebit,
+        totalCredit,
+        createdBy: uid || null,
+        createdAt: serverTimestamp(),
+      })
+    }
+  })
 }
 
 export function voucherTotals(lines) {

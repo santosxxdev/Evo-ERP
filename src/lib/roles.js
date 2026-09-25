@@ -14,12 +14,14 @@ export const ROLES = ['admin', 'accountant', 'sales', 'viewer']
  */
 const SECTIONS = {
   admin: [
-    '/', '/clients', '/employees', '/payroll', '/positions', '/departments', '/employee-migration', '/attendance', '/vendors', '/assets', '/quotations', '/campaigns', '/invoices',
+    '/', '/clients', '/employees', '/payroll', '/positions', '/departments', '/employee-migration', '/attendance', '/vendors', '/vendor-statement', '/assets', '/quotations', '/campaigns', '/invoices',
     '/expenses', '/services', '/reports', '/accounting', '/vouchers', '/treasury', '/settings', '/users',
+    '/commission-rules', '/sales-commissions', '/sales-periods',
   ],
   accountant: [
-    '/', '/clients', '/employees', '/payroll', '/positions', '/departments', '/employee-migration', '/attendance', '/vendors', '/assets', '/quotations', '/campaigns', '/invoices',
+    '/', '/clients', '/employees', '/payroll', '/positions', '/departments', '/employee-migration', '/attendance', '/vendors', '/vendor-statement', '/assets', '/quotations', '/campaigns', '/invoices',
     '/expenses', '/services', '/reports', '/accounting', '/vouchers', '/treasury', '/settings',
+    '/commission-rules', '/sales-commissions', '/sales-periods',
   ],
   sales: ['/', '/clients', '/quotations', '/campaigns', '/invoices', '/services'],
   viewer: ['/', '/clients', '/invoices', '/reports'],

@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react'
 import { Navigate, useParams } from 'react-router-dom'
+import { useAuth } from '../context/AuthContext'
 import { useI18n } from '../i18n'
 import {
   COL,
@@ -215,7 +216,7 @@ function ListManager({ tab }) {
             <div className="flex flex-wrap justify-center gap-2">
               {tab === 'paymentMethods' && (
                 <Button variant="secondary" onClick={seedDefaults} disabled={busy}>
-                  ⚡ إنشاء وربط طرق التحويل بالحسابات الفرعية (×{DEFAULT_PAYMENT_METHODS.length})
+                  إنشاء وربط طرق التحويل بالحسابات الفرعية (×{DEFAULT_PAYMENT_METHODS.length})
                 </Button>
               )}
               <Button onClick={() => setEditing({})}>+ {t('settings.addItem')}</Button>
@@ -487,6 +488,7 @@ function ListForm({ open, row, isPaymentMethod, isExpenseCategory, accounts = []
 
 function CompanySettings() {
   const { t } = useI18n()
+  const { user, role } = useAuth()
   const { settings, loading } = useSettings()
   const [draft, setDraft] = useState(null)
   const [busy, setBusy] = useState(false)
@@ -494,11 +496,34 @@ function CompanySettings() {
   const [uploading, setUploading] = useState(false)
   const [uploadError, setUploadError] = useState(null)
 
+  const [resetModalOpen, setResetModalOpen] = useState(false)
+  const [resetConfirmation, setResetConfirmation] = useState('')
+  const [resetting, setResetting] = useState(false)
+  const [resetSuccess, setResetSuccess] = useState(false)
+  const [resetError, setResetError] = useState(null)
+
   const value = draft ?? settings
 
   function set(field, next) {
     setDraft({ ...value, [field]: next })
     setSaved(false)
+  }
+
+  async function handleResetDatabase() {
+    setResetting(true)
+    setResetError(null)
+    try {
+      await resetSystemData(user?.uid)
+      setResetSuccess(true)
+      setTimeout(() => {
+        window.location.reload()
+      }, 1500)
+    } catch (err) {
+      console.error('Reset failed:', err)
+      setResetError(err?.message || 'حدث خطأ أثناء تصفير البيانات')
+    } finally {
+      setResetting(false)
+    }
   }
 
   async function pickLogo(event) {
@@ -706,6 +731,83 @@ function CompanySettings() {
         </Button>
         {saved && <span className="text-sm font-semibold text-emerald-600">{t('settings.saved')}</span>}
       </div>
+
+      {/* منطقة الخطر: مسح وتصفير قاعدة البيانات */}
+      {role === 'admin' && (
+        <div className="mt-10 rounded-2xl border border-red-200 bg-red-50/40 p-6 dark:border-red-900/40 dark:bg-red-950/20">
+          <h4 className="text-base font-bold text-red-700 dark:text-red-400">منطقة الخطر — مسح وتصفير قاعدة البيانات</h4>
+          <p className="mt-1.5 text-sm text-slate-600 dark:text-slate-300">
+            سيقوم هذا الإجراء بحذف جميع البيانات التجريبية والتجارية بالكامل من قاعدة البيانات: الفواتير، سندات القبض والصرف، المشتريات، المردودات، الدفعات، قيود الحسابات، العملاء، الموردين، الموظفين، الرواتب، المصروفات، والخدمات، مع إعادة بناء شجرة الحسابات الأساسية والإبقاء على حسابك كمدير.
+          </p>
+          <div className="mt-4">
+            <Button
+              variant="danger"
+              onClick={() => {
+                setResetConfirmation('')
+                setResetError(null)
+                setResetSuccess(false)
+                setResetModalOpen(true)
+              }}
+            >
+              مسح وتصفير كافة البيانات الآن
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {/* نافذة تأكيد التصفير */}
+      <Modal
+        open={resetModalOpen}
+        onClose={() => !resetting && setResetModalOpen(false)}
+        title="تأكيد مسح وتصفير كافة البيانات"
+        footer={
+          <div className="flex items-center justify-end gap-3">
+            <Button
+              variant="ghost"
+              disabled={resetting}
+              onClick={() => setResetModalOpen(false)}
+            >
+              إلغاء
+            </Button>
+            <Button
+              variant="danger"
+              disabled={resetting || resetConfirmation.trim() !== 'مسح' || resetSuccess}
+              onClick={handleResetDatabase}
+            >
+              {resetting ? 'جاري المسح والتصفير...' : 'تأكيد المسح النهائي'}
+            </Button>
+          </div>
+        }
+      >
+        <div className="space-y-4">
+          <div className="rounded-xl bg-red-50 p-4 text-sm text-red-700 dark:bg-red-950/50 dark:text-red-300">
+            <p className="font-bold">تحذير شديد الأهمية:</p>
+            <p className="mt-1">
+              هذا الإجراء نهائي ولا يمكن التراجع عنه. سيتم مسح جميع الفواتير والسندات والعملاء والموردين وقيود المحاسبة بالكامل وإعادة تصفير النظام!
+            </p>
+          </div>
+
+          <Field
+            label="للتأكيد، اكتب كلمة (مسح) في المربع أدناه:"
+            hint="اكتب كلمة مسح لتفعيل زر التأكيد"
+            error={resetError}
+          >
+            <Input
+              value={resetConfirmation}
+              onChange={(e) => setResetConfirmation(e.target.value)}
+              placeholder="مسح"
+              disabled={resetting || resetSuccess}
+              autoFocus
+            />
+          </Field>
+
+          {resetSuccess && (
+            <div className="rounded-xl bg-emerald-50 p-4 text-center text-sm font-bold text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-300">
+              ✓ تم تصفير ومسح كافة البيانات بنجاح! جاري تحديث الصفحة...
+            </div>
+          )}
+        </div>
+      </Modal>
     </div>
   )
 }

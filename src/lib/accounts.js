@@ -1,4 +1,7 @@
 import { COL, createDoc, deleteDocById, updateDocById } from './db'
+import { db } from './firebase'
+import { collection, doc, serverTimestamp, writeBatch } from 'firebase/firestore'
+import standardChartOfAccounts from './standardChartOfAccounts.json'
 
 export async function cleanupDuplicateAccounts(accounts) {
   if (!accounts || accounts.length === 0) return
@@ -25,59 +28,6 @@ export async function cleanupDuplicateAccounts(accounts) {
   }
 }
 
-export function getNormalBalance(account) {
-  if (!account) return 'debit'
-  if (account.normalBalance === 'debit' || account.normalBalance === 'credit') {
-    return account.normalBalance
-  }
-  if (account.role === 'accumDep') return 'credit'
-  if (account.role === 'drawings') return 'debit'
-  return ACCOUNT_TYPES[account.type]?.normal ?? 'debit'
-}
-
-/** زرع الشجرة الافتراضية بدون تكرار المستندات */
-export async function seedAccounts(existingAccounts = []) {
-  const byCode = new Map()
-  const existingByCode = new Map()
-  for (const account of existingAccounts) {
-    if (String(account.code) === '11010201' || account.name === 'الحساب البنكي الرئيسي') {
-      await deleteDocById(ACCOUNTS_COL, account.id).catch(() => {})
-      continue
-    }
-    existingByCode.set(String(account.code), account)
-  }
-
-  for (const account of DEFAULT_ACCOUNTS) {
-    const codeStr = String(account.code)
-    const existing = existingByCode.get(codeStr)
-    const payload = {
-      code: account.code,
-      name: account.name,
-      nameEn: account.nameEn ?? '',
-      type: account.type,
-      isGroup: Boolean(account.isGroup),
-      role: account.role ?? null,
-      normalBalance: account.normalBalance ?? null,
-      parentCode: account.parent ?? null,
-      archived: false,
-    }
-
-    if (existing?.id) {
-      await updateDocById(ACCOUNTS_COL, existing.id, payload)
-      byCode.set(codeStr, existing.id)
-    } else {
-      const created = await createDoc(ACCOUNTS_COL, payload)
-      byCode.set(codeStr, created.id)
-    }
-  }
-
-  if (existingAccounts.length > 0) {
-    await cleanupDuplicateAccounts(existingAccounts)
-  }
-
-  return byCode
-}
-
 export const ACCOUNTS_COL = 'accounts'
 
 /** أنواع الحسابات وطبيعة رصيدها */
@@ -89,102 +39,27 @@ export const ACCOUNT_TYPES = {
   expense: { normal: 'debit' },
 }
 
+export function getNormalBalance(account) {
+  if (!account) return 'debit'
+  if (account.normalBalance === 'debit' || account.normalBalance === 'credit') {
+    return account.normalBalance
+  }
+  if (account.role === 'accumDep') return 'credit'
+  if (account.role === 'drawings') return 'debit'
+  const root = String(account.code || '').charAt(0)
+  if (root === '1' || root === '5' || root === '6') return 'debit'
+  if (root === '2' || root === '3' || root === '4' || root === '7') return 'credit'
+  return ACCOUNT_TYPES[account.type]?.normal ?? 'debit'
+}
+
 /**
- * شجرة الحسابات الافتراضية لشركة ميديا — بنفس مستويات ترقيم دفترة
- * (1 رئيسي → 11 مجموعة → 111 مجموعة فرعية → 1111 حساب تفصيلي).
- * `role` يسمح للنظام بإيجاد الحساب تلقائيًا حتى لو غيّر المستخدم الاسم أو الكود.
+ * شجرة الحسابات القياسية ذات الـ 6 مستويات المستخرجة من ملف الإكسيل:
+ * (367 حساباً موزعة على 6 مستويات ومقسمة على 8 مجموعات رئيسية).
  */
-export const DEFAULT_ACCOUNTS = [
-  { code: '1', name: 'الأصول', nameEn: 'Assets', type: 'asset', isGroup: true },
-
-  { code: '11', name: 'الأصول المتداولة', nameEn: 'Current assets', type: 'asset', isGroup: true, parent: '1' },
-  { code: '1101', name: 'النقدية وما في حكمها', nameEn: 'Cash & cash equivalents', type: 'asset', isGroup: true, parent: '11' },
-  { code: '110101', name: 'الخزينة الرئيسية', nameEn: 'Main cash treasury', type: 'asset', parent: '1101', role: 'cash' },
-  { code: '110102', name: 'البنوك والمحافظ الرقمية', nameEn: 'Banks & digital wallets', type: 'asset', isGroup: true, parent: '1101' },
-  { code: '11010202', name: 'محافظ فودافون كاش والرقمية', nameEn: 'E-Wallets & Mobile cash', type: 'asset', parent: '110102' },
-
-  { code: '1102', name: 'العملاء والأرصدة المدينة', nameEn: 'Receivables & debtors', type: 'asset', isGroup: true, parent: '11' },
-  { code: '110201', name: 'العملاء - مدينون تجاريون', nameEn: 'Accounts receivable - Trade', type: 'asset', parent: '1102', role: 'receivable' },
-  { code: '110202', name: 'دفعات مقدمة للموردين', nameEn: 'Vendor advance prepayments', type: 'asset', parent: '1102', role: 'vendorAdvance' },
-  { code: '110203', name: 'عهد وسلف الموظفين', nameEn: 'Employee advances & loans', type: 'asset', parent: '1102' },
-  { code: '110204', name: 'أوراق قبض', nameEn: 'Notes receivable', type: 'asset', parent: '1102' },
-  { code: '110205', name: 'مصاريف مدفوعة مقدماً', nameEn: 'Prepaid expenses', type: 'asset', parent: '1102' },
-  { code: '110206', name: 'تأمينات وأمانات لدى الغير', nameEn: 'Deposits held by others', type: 'asset', parent: '1102' },
-
-  { code: '1103', name: 'المخزون', nameEn: 'Inventory', type: 'asset', parent: '11', role: 'inventory' },
-  { code: '1104', name: 'ضريبة المدخلات المستحقة', nameEn: 'Input tax receivable', type: 'asset', parent: '11', role: 'taxReceivable' },
-
-  { code: '12', name: 'الأصول غير المتداولة', nameEn: 'Non-current assets', type: 'asset', isGroup: true, parent: '1' },
-  { code: '1201', name: 'الأصول الثابتة', nameEn: 'Fixed assets', type: 'asset', isGroup: true, parent: '12' },
-  { code: '120101', name: 'أجهزة كمبيوتر ومعدات تصوير', nameEn: 'Equipment & cameras', type: 'asset', parent: '1201', role: 'equipment' },
-  { code: '120102', name: 'أثاث وتجهيزات مكتبية', nameEn: 'Furniture & fixtures', type: 'asset', parent: '1201' },
-  { code: '120103', name: 'تحسينات المقر المستأجر', nameEn: 'Leased premises improvements', type: 'asset', parent: '1201' },
-
-  { code: '1202', name: 'مجمع إهلاك الأصول الثابتة', nameEn: 'Accumulated depreciation', type: 'asset', isGroup: true, parent: '12' },
-  { code: '120201', name: 'مجمع إهلاك الأجهزة والمعدات', nameEn: 'Accum. Depr. - Equipment', type: 'asset', parent: '1202', role: 'accumDep', normalBalance: 'credit' },
-  { code: '120202', name: 'مجمع إهلاك الأثاث والتجهيزات', nameEn: 'Accum. Depr. - Furniture', type: 'asset', parent: '1202', normalBalance: 'credit' },
-
-  { code: '1203', name: 'الأصول غير الملموسة', nameEn: 'Intangible assets', type: 'asset', isGroup: true, parent: '12' },
-  { code: '120301', name: 'برمجيات وحسابات تراخيص', nameEn: 'Software & digital licenses', type: 'asset', parent: '1203' },
-
-  { code: '2', name: 'الالتزامات', nameEn: 'Liabilities', type: 'liability', isGroup: true },
-  { code: '21', name: 'الالتزامات المتداولة', nameEn: 'Current liabilities', type: 'liability', isGroup: true, parent: '2' },
-  { code: '2101', name: 'الموردون والدائنون التجاريون', nameEn: 'Accounts payable - Trade vendors', type: 'liability', parent: '21', role: 'vendorPayable' },
-  { code: '2102', name: 'مستحقات الموظفين والـ Freelancers', nameEn: 'Payroll & creator payables', type: 'liability', isGroup: true, parent: '21' },
-  { code: '210201', name: 'رواتب ومستحقات الموظفين', nameEn: 'Employees payroll payable', type: 'liability', parent: '2102', role: 'employeePayable' },
-  { code: '210202', name: 'مستحقات المبتكرين والـ Freelancers', nameEn: 'Creators & freelancers payable', type: 'liability', parent: '2102' },
-
-  { code: '2103', name: 'أمانات ميزانيات إعلانات العملاء', nameEn: 'Client ad budgets held', type: 'liability', parent: '21', role: 'adBudgetHeld' },
-  { code: '2104', name: 'الضرائب المستحقة', nameEn: 'Tax payable', type: 'liability', parent: '21', role: 'tax' },
-  { code: '2105', name: 'أوراق دفع', nameEn: 'Notes payable', type: 'liability', parent: '21' },
-  { code: '2106', name: 'مصروفات مستحقة غير مدفوعة', nameEn: 'Accrued expenses', type: 'liability', parent: '21' },
-  { code: '2107', name: 'دفوعات مقدمة من العملاء', nameEn: 'Client advance prepayments', type: 'liability', parent: '21' },
-
-  { code: '22', name: 'الالتزامات غير المتداولة', nameEn: 'Non-current liabilities', type: 'liability', isGroup: true, parent: '2' },
-  { code: '2201', name: 'قروض وتسهيلات طويلة الأجل', nameEn: 'Long-term loans', type: 'liability', parent: '22' },
-
-  { code: '3', name: 'حقوق الملكية', nameEn: 'Equity', type: 'equity', isGroup: true },
-  { code: '3101', name: 'رأس المال المدفوع', nameEn: 'Paid-in Capital', type: 'equity', parent: '3', role: 'capital' },
-  { code: '32', name: 'الاحتياطيات العامة والنظامية', nameEn: 'Reserves', type: 'equity', parent: '3' },
-  { code: '33', name: 'الأرباح المحتجزة / المدورة', nameEn: 'Retained earnings', type: 'equity', parent: '3', role: 'retained' },
-  { code: '34', name: 'مسحوبات الشركاء والملاّك', nameEn: 'Owner drawings', type: 'equity', parent: '3', role: 'drawings', normalBalance: 'debit' },
-
-  { code: '4', name: 'الإيرادات', nameEn: 'Revenue', type: 'revenue', isGroup: true },
-  { code: '41', name: 'إيرادات المبيعات والخدمات', nameEn: 'Service revenue', type: 'revenue', isGroup: true, parent: '4' },
-  { code: '4101', name: 'إيرادات تسويق وإدارة إعلانات', nameEn: 'Digital marketing revenue', type: 'revenue', parent: '41', role: 'revenue' },
-  { code: '4102', name: 'إيرادات إنتاج فني وتصوير', nameEn: 'Media production revenue', type: 'revenue', parent: '41' },
-  { code: '4103', name: 'إيرادات تصميم وهوية بصرية', nameEn: 'Graphic & branding revenue', type: 'revenue', parent: '41' },
-  { code: '4104', name: 'إيرادات استشارات وتطوير', nameEn: 'Consulting revenue', type: 'revenue', parent: '41' },
-  { code: '4201', name: 'إيرادات أخرى متنوعة', nameEn: 'Other income', type: 'revenue', parent: '4' },
-
-  { code: '5', name: 'المصروفات والتكاليف', nameEn: 'Expenses & costs', type: 'expense', isGroup: true },
-
-  { code: '51', name: 'التكاليف المباشرة للخدمات', nameEn: 'Direct cost of services (COGS)', type: 'expense', isGroup: true, parent: '5' },
-  { code: '5101', name: 'أجور موديلز وصناع محتوى', nameEn: 'Model & creator fees', type: 'expense', parent: '51', role: 'costModel' },
-  { code: '5102', name: 'تكاليف تصوير ومونتاج وإنتاج', nameEn: 'Filming & editing costs', type: 'expense', parent: '51', role: 'costVideo' },
-  { code: '5103', name: 'تكاليف تصميم جرافيك خارجي', nameEn: 'Graphic design costs', type: 'expense', parent: '51', role: 'costDesign' },
-  { code: '5104', name: 'إيجار معدات واستوديوهات خارجية', nameEn: 'Equipment rental costs', type: 'expense', parent: '51', role: 'costEquipment' },
-  { code: '5105', name: 'عمولات ونسب مبيعات ومسوقين', nameEn: 'Commissions', type: 'expense', parent: '51', role: 'costCommission' },
-  { code: '5106', name: 'تكاليف إنتاجية ودفعات سحابية أخرى', nameEn: 'Other direct production costs', type: 'expense', parent: '51', role: 'costOther' },
-
-  { code: '52', name: 'المصروفات الإدارية والعمومية', nameEn: 'General & administrative expenses', type: 'expense', isGroup: true, parent: '5' },
-  { code: '5201', name: 'رواتب وأجور الإدارة', nameEn: 'Salaries & admin wages', type: 'expense', parent: '52', role: 'salaryExpense' },
-  { code: '5202', name: 'إيجار وتكاليف المقر', nameEn: 'Office rent', type: 'expense', parent: '52' },
-  { code: '5203', name: 'كهرباء، مياه، إنترنت واتصالات', nameEn: 'Utilities & telecom', type: 'expense', parent: '52' },
-  { code: '5204', name: 'صيانة أجهزة وتجهيزات', nameEn: 'Equipment maintenance', type: 'expense', parent: '52', role: 'maintenance' },
-  { code: '5205', name: 'إهلاك الأصول الثابتة', nameEn: 'Depreciation expense', type: 'expense', parent: '52', role: 'depreciation' },
-  { code: '5206', name: 'مصروفات بنكية وعمولات تحويل', nameEn: 'Bank charges & fees', type: 'expense', parent: '52' },
-  { code: '5207', name: 'اشتراكات أدوات وبرمجيات رقمية', nameEn: 'Software subscriptions & SaaS', type: 'expense', parent: '52' },
-  { code: '5208', name: 'ضيافة ونظافة ومستلزمات مكتبية', nameEn: 'Office supplies & hospitality', type: 'expense', parent: '52' },
-  { code: '5209', name: 'مصروفات إدارية ونثرية أخرى', nameEn: 'Other admin expenses', type: 'expense', parent: '52', role: 'otherExpense' },
-
-  { code: '53', name: 'المصروفات التسويقية والبيعية', nameEn: 'Selling & marketing expenses', type: 'expense', isGroup: true, parent: '5' },
-  { code: '5301', name: 'إعلانات وحملات الشركة الذاتية', nameEn: 'Company own paid ads', type: 'expense', parent: '53' },
-  { code: '5302', name: 'مطبوعات وهدايا تسويقية', nameEn: 'Marketing materials', type: 'expense', parent: '53' },
-]
+export const DEFAULT_ACCOUNTS = standardChartOfAccounts
 
 export const DEFAULT_PAYMENT_METHODS = [
-  { name: 'الخزينة الرئيسية', type: 'cash', accountCode: '1111' },
+  { name: 'الخزينة الرئيسية', type: 'cash', accountCode: '1-01-01-01-01-001' },
 ]
 
 /**
@@ -211,6 +86,63 @@ export function accountsMissingRole(accounts) {
   })
 }
 
+/** زرع الشجرة القياسية ذات الـ 6 مستويات باستخدام دفعات Firestore */
+export async function seedAccounts(existingAccounts = []) {
+  const byCode = new Map()
+  const existingByCode = new Map()
+  for (const account of existingAccounts) {
+    existingByCode.set(String(account.code), account)
+  }
+
+  // تقسيم الـ 367 حساباً إلى دفعات (Chunks of 400 docs)
+  const chunks = []
+  let currentChunk = []
+  for (const account of DEFAULT_ACCOUNTS) {
+    currentChunk.push(account)
+    if (currentChunk.length >= 400) {
+      chunks.push(currentChunk)
+      currentChunk = []
+    }
+  }
+  if (currentChunk.length > 0) chunks.push(currentChunk)
+
+  for (const chunk of chunks) {
+    const batch = writeBatch(db)
+    for (const account of chunk) {
+      const codeStr = String(account.code)
+      const existing = existingByCode.get(codeStr)
+      const payload = {
+        code: account.code,
+        name: account.name,
+        nameEn: account.nameEn ?? '',
+        level: account.level ?? (account.code.split('-').length),
+        type: account.type,
+        categoryName: account.categoryName ?? '',
+        isGroup: Boolean(account.isGroup),
+        isPosting: Boolean(account.isPosting),
+        role: account.role ?? null,
+        normalBalance: account.normalBalance ?? null,
+        parentCode: account.parentCode ?? null,
+        notes: account.notes ?? '',
+        archived: false,
+      }
+
+      if (existing?.id) {
+        const ref = doc(db, ACCOUNTS_COL, existing.id)
+        batch.update(ref, payload)
+        byCode.set(codeStr, existing.id)
+      } else {
+        const ref = doc(collection(db, ACCOUNTS_COL))
+        batch.set(ref, { ...payload, createdAt: serverTimestamp() })
+        byCode.set(codeStr, ref.id)
+      }
+    }
+    await batch.commit()
+  }
+
+  return byCode
+}
+
 export async function seedMissingAccounts(accounts) {
   const missing = missingDefaults(accounts)
 
@@ -219,10 +151,15 @@ export async function seedMissingAccounts(accounts) {
       code: account.code,
       name: account.name,
       nameEn: account.nameEn ?? '',
+      level: account.level ?? (account.code.split('-').length),
       type: account.type,
+      categoryName: account.categoryName ?? '',
       isGroup: Boolean(account.isGroup),
+      isPosting: Boolean(account.isPosting),
       role: account.role ?? null,
-      parentCode: account.parent ?? null,
+      normalBalance: account.normalBalance ?? null,
+      parentCode: account.parentCode ?? null,
+      notes: account.notes ?? '',
       archived: false,
     })
   }
@@ -238,34 +175,33 @@ export async function seedMissingAccounts(accounts) {
 }
 
 /**
- * أول كود فرعي شاغر تحت حساب أب: كود الأب + رقم تسلسلي (يبدأ بخانة واحدة
- * ويتوسّع عند الحاجة). يتخطّى الأكواد المستخدمة فعلًا حتى لا يتكرر كود.
+ * أول كود فرعي شاغر تحت حساب أب: يدعم نمط الـ 6 مستويات بالواصلات
+ * المستوى 1: 1 إلى 8
+ * المستوى 2: 1-01
+ * المستوى 3: 1-01-01
+ * المستوى 4: 1-01-01-01
+ * المستوى 5: 1-01-01-01-01
+ * المستوى 6: 1-01-01-01-01-001 (ثلاث خانات)
  */
 export function nextChildCode(accounts, parentCode) {
   const used = new Set(accounts.map((account) => String(account.code)))
-  const prefix = parentCode ? String(parentCode) : ''
-
-  const siblings = accounts
-    .filter((account) => (account.parentCode ?? '') === (parentCode ?? ''))
-    .map((account) => String(account.code))
-
-  /* أطول امتداد لكود شقيق يحدّد عدد الخانات المطلوبة */
-  let width = 1
-  for (const code of siblings) {
-    if (code.startsWith(prefix) && code.length > prefix.length) {
-      width = Math.max(width, code.length - prefix.length)
+  if (!parentCode) {
+    for (let i = 1; i <= 9; i++) {
+      if (!used.has(String(i))) return String(i)
     }
+    return String(accounts.length + 1)
   }
+  const prefix = String(parentCode)
+  const segments = prefix.split('-')
+  const isLevel5Parent = segments.length === 5 // المستوى التالي سيكون السادس (3 أرقام: 001, 002...)
 
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    const max = 10 ** width
-    for (let n = 1; n < max; n += 1) {
-      const candidate = `${prefix}${String(n).padStart(width, '0')}`
-      if (!used.has(candidate)) return candidate
-    }
-    width += 1
+  const padDigits = isLevel5Parent ? 3 : 2
+  for (let i = 1; i <= 999; i++) {
+    const suffix = String(i).padStart(padDigits, '0')
+    const candidate = `${prefix}-${suffix}`
+    if (!used.has(candidate)) return candidate
   }
-  return `${prefix}1`
+  return `${prefix}-01`
 }
 
 export function accountLabel(account, lang) {
@@ -276,7 +212,9 @@ export function accountLabel(account, lang) {
 /** بناء شجرة متداخلة من قائمة مسطّحة معتمدة على parentCode */
 export function buildTree(accounts) {
   if (!accounts || !Array.isArray(accounts)) return []
-  const sorted = [...accounts].sort((a, b) => String(a.code ?? '').localeCompare(String(b.code ?? '')))
+  const sorted = [...accounts].sort((a, b) =>
+    String(a.code ?? '').localeCompare(String(b.code ?? ''), undefined, { numeric: true })
+  )
   const knownCodes = new Set(sorted.map((account) => String(account.code)))
   const children = new Map()
 
@@ -299,6 +237,7 @@ export function buildTree(accounts) {
     return {
       ...account,
       depth,
+      level: account.level || (depth + 1),
       children: childNodes,
     }
   }
@@ -318,8 +257,11 @@ export function flattenTree(nodes, output = [], visited = new Set()) {
   return output
 }
 
-/** إيجاد حساب بدوره الوظيفي */
+/** إيجاد حساب بدوره الوظيفي — مع إعطاء الأولوية لحسابات الحركة غير التجميعية */
 export function byRole(accounts, role) {
+  if (!accounts || !Array.isArray(accounts)) return null
+  const nonGroup = accounts.find((account) => account.role === role && !account.isGroup)
+  if (nonGroup) return nonGroup
   return accounts.find((account) => account.role === role) ?? null
 }
 
@@ -333,8 +275,286 @@ export function treasuryAccounts(accounts, paymentMethods = []) {
   return accounts.filter(
     (account) =>
       !account.isGroup &&
-      (account.role === 'cash' || account.role === 'bank' || linked.has(account.id)),
+      (account.role === 'cash' ||
+        account.role === 'bank' ||
+        account.role === 'adTreasury' ||
+        linked.has(account.id) ||
+        String(account.code).startsWith('1-01-01') ||
+        String(account.code).startsWith('1-01-02')),
   )
 }
 
+/**
+ * بناء شجرة حسابات نظيفة ومكتملة تشمل كافة الحسابات الفرعية والأستاذ المساعد:
+ * - الحسابات الفرعية للموظفين (مستحقات وسلف وكشف شامل)
+ * - الحسابات الفرعية للعملاء
+ * - الحسابات الفرعية للموردين
+ */
+export function buildCleanAccounts(accounts = [], clients = [], employees = [], vendors = []) {
+  const empMap = new Map((employees || []).map((e) => [e.id, e]))
+  const map = new Map()
+  for (const account of accounts) {
+    const codeKey = String(account.code)
+    if (codeKey === '11010201' || (account.name || '').includes('البنكي الرئيسي') || (account.name || '').includes('البنكى الرئيسى')) {
+      continue
+    }
+    if (!map.has(codeKey)) {
+      map.set(codeKey, account)
+    } else {
+      const existing = map.get(codeKey)
+      if (!existing.role && account.role) {
+        map.set(codeKey, account)
+      }
+    }
+  }
+
+  const baseList = Array.from(map.values())
+
+  // دالة مساعدة لتوليد كود فرعي متوافق
+  const makeChildCode = (parentCode, index, pad = 3) => {
+    const pStr = String(parentCode)
+    if (pStr.includes('-')) {
+      return `${pStr}-${String(index).padStart(pad, '0')}`
+    }
+    return `${pStr}${String(index).padStart(Math.min(pad, 2), '0')}`
+  }
+
+  // 1 — إضافة شجرة العملاء
+  let recIdx = baseList.findIndex(
+    (a) =>
+      a.role === 'receivableGroup' ||
+      String(a.code) === '1-01-03-01-01' ||
+      (a.role === 'receivable' && a.isGroup) ||
+      String(a.code) === '110201' ||
+      String(a.code) === '112' ||
+      String(a.code).startsWith('110201'),
+  )
+  if (recIdx === -1) {
+    recIdx = baseList.findIndex((a) => a.role === 'receivable')
+  }
+
+  if (recIdx !== -1 && clients.length > 0) {
+    baseList[recIdx] = { ...baseList[recIdx], isGroup: true }
+    const recCode = String(baseList[recIdx].code)
+
+    const parentClients = clients.filter((c) => c.isParent || (!c.parentId && clients.some((sub) => sub.parentId === c.id)))
+    const standaloneClients = clients.filter((c) => !c.isParent && !c.parentId && !clients.some((sub) => sub.parentId === c.id))
+
+    let pIndex = 1
+    for (const pClient of parentClients) {
+      const pCode = makeChildCode(recCode, pIndex, 3)
+      pIndex += 1
+      const childBranches = clients.filter((c) => c.parentId === pClient.id)
+
+      baseList.push({
+        id: `client-${pClient.id}`,
+        code: pCode,
+        name: `${pClient.name} (عميل رئيسي)`,
+        nameEn: pClient.businessName || '',
+        type: 'asset',
+        isGroup: true,
+        parentCode: recCode,
+        clientId: pClient.id,
+        isClientNode: true,
+        isParentClient: true,
+        subLedgerType: 'client',
+        subLedgerId: pClient.id,
+        category: 'client',
+        badge: 'أستاذ مساعد عميل',
+      })
+
+      let bIndex = 1
+      for (const bClient of childBranches) {
+        const bCode = makeChildCode(pCode, bIndex, 2)
+        bIndex += 1
+
+        baseList.push({
+          id: `client-${bClient.id}`,
+          code: bCode,
+          name: `${bClient.name} (فرع)`,
+          nameEn: bClient.businessName || '',
+          type: 'asset',
+          isGroup: false,
+          parentCode: pCode,
+          clientId: bClient.id,
+          isClientNode: true,
+          isChildClient: true,
+          subLedgerType: 'client',
+          subLedgerId: bClient.id,
+          category: 'client',
+          badge: 'أستاذ مساعد عميل (فرع)',
+        })
+      }
+    }
+
+    for (const sClient of standaloneClients) {
+      const sCode = makeChildCode(recCode, pIndex, 3)
+      pIndex += 1
+
+      baseList.push({
+        id: `client-${sClient.id}`,
+        code: sCode,
+        name: sClient.name,
+        nameEn: sClient.businessName || '',
+        type: 'asset',
+        isGroup: false,
+        parentCode: recCode,
+        clientId: sClient.id,
+        isClientNode: true,
+        subLedgerType: 'client',
+        subLedgerId: sClient.id,
+        category: 'client',
+        badge: 'أستاذ مساعد عميل',
+      })
+    }
+  }
+
+  // 2 — إضافة حسابات الموظفين تفصيليًا تحت مستحقات الموظفين (دائنون 2-01-03-01-01 أو 210201)
+  let empPayIdx = baseList.findIndex(
+    (a) =>
+      a.role === 'employeePayableGroup' ||
+      String(a.code) === '2-01-03-01-01' ||
+      (a.role === 'employeePayable' && a.isGroup) ||
+      String(a.code) === '210201',
+  )
+  if (empPayIdx === -1) {
+    empPayIdx = baseList.findIndex((a) => a.role === 'employeePayable')
+  }
+
+  if (empPayIdx !== -1 && employees.length > 0) {
+    baseList[empPayIdx] = { ...baseList[empPayIdx], isGroup: true }
+    const empPayCode = String(baseList[empPayIdx].code)
+    let eIndex = 1
+    for (const emp of employees) {
+      const eCode = makeChildCode(empPayCode, eIndex, 3)
+      eIndex += 1
+      baseList.push({
+        id: `emp-payable-${emp.id}`,
+        code: eCode,
+        name: `${emp.name} (مستحقات موظف)`,
+        type: 'liability',
+        isGroup: false,
+        parentCode: empPayCode,
+        employeeId: emp.id,
+        subLedgerType: 'employee',
+        subLedgerId: emp.id,
+        isEmployeeNode: true,
+        category: 'employee',
+        badge: 'أستاذ مساعد موظف (مستحقات)',
+      })
+    }
+  }
+
+  // 3 — إضافة حسابات الموظفين تفصيليًا تحت عهد وسلف الموظفين (أصول 1-01-06-02-01 أو 110203)
+  let empAdvIdx = baseList.findIndex(
+    (a) =>
+      a.role === 'employeeAdvance' ||
+      String(a.code) === '1-01-06-02-01' ||
+      String(a.code) === '1-01-06-02' ||
+      String(a.code) === '110203',
+  )
+  if (empAdvIdx !== -1 && employees.length > 0) {
+    baseList[empAdvIdx] = { ...baseList[empAdvIdx], isGroup: true }
+    const empAdvCode = String(baseList[empAdvIdx].code)
+    let eIndex = 1
+    for (const emp of employees) {
+      const eCode = makeChildCode(empAdvCode, eIndex, 3)
+      eIndex += 1
+      baseList.push({
+        id: `emp-advance-${emp.id}`,
+        code: eCode,
+        name: `${emp.name} (عهدة/سلفة)`,
+        type: 'asset',
+        isGroup: false,
+        parentCode: empAdvCode,
+        employeeId: emp.id,
+        subLedgerType: 'employee',
+        subLedgerId: emp.id,
+        isEmployeeNode: true,
+        category: 'employee',
+        badge: 'أستاذ مساعد موظف (سلفة)',
+      })
+    }
+  }
+
+  // 4 — إضافة كشف حساب موظف شامل (يجمع كل الحركات المالية للموظف)
+  if (employees.length > 0) {
+    for (const emp of employees) {
+      baseList.push({
+        id: `emp-full-${emp.id}`,
+        code: `EMP-${emp.employeeCode || String(emp.id).slice(-4).toUpperCase()}`,
+        name: `${emp.name} (كشف حساب موظف شامل)`,
+        type: 'liability',
+        isGroup: false,
+        parentCode: empPayIdx !== -1 ? String(baseList[empPayIdx].code) : null,
+        employeeId: emp.id,
+        subLedgerType: 'employee',
+        subLedgerId: emp.id,
+        isEmployeeFullNode: true,
+        category: 'employee',
+        badge: 'كشف حساب موظف شامل',
+      })
+    }
+  }
+
+  // 5 — إضافة حسابات الموردين تفصيليًا تحت الموردين (دائنون 2-01-01-01-01 أو 211)
+  let vendorIdx = baseList.findIndex(
+    (a) =>
+      a.role === 'vendorPayableGroup' ||
+      String(a.code) === '2-01-01-01-01' ||
+      (a.role === 'vendorPayable' && a.isGroup) ||
+      String(a.code) === '211' ||
+      String(a.code) === '2101' ||
+      String(a.code) === '210101' ||
+      String(a.code) === '21101' ||
+      String(a.code).startsWith('211') ||
+      String(a.code).startsWith('2101'),
+  )
+  if (vendorIdx === -1) {
+    vendorIdx = baseList.findIndex((a) => a.role === 'vendorPayable')
+  }
+
+  if (vendors.length > 0) {
+    if (vendorIdx === -1) {
+      const autoVendorGroup = {
+        id: 'group-vendor-2-01-01-01-01-auto',
+        code: '2-01-01-01-01',
+        name: 'حسابات الموردين والدائنين التجاريين',
+        type: 'liability',
+        isGroup: true,
+        parentCode: '2-01-01-01',
+        role: 'vendorPayableGroup',
+      }
+      baseList.push(autoVendorGroup)
+      vendorIdx = baseList.length - 1
+    } else {
+      baseList[vendorIdx] = { ...baseList[vendorIdx], isGroup: true }
+    }
+
+    const vendorCode = String(baseList[vendorIdx].code)
+    let vIndex = 1
+    for (const vendor of vendors) {
+      const vCode = makeChildCode(vendorCode, vIndex, 3)
+      vIndex += 1
+      baseList.push({
+        id: `vendor-${vendor.id}`,
+        code: vCode,
+        name: vendor.name,
+        type: 'liability',
+        isGroup: false,
+        parentCode: vendorCode,
+        vendorId: vendor.id,
+        subLedgerType: 'vendor',
+        subLedgerId: vendor.id,
+        isVendorNode: true,
+        category: 'vendor',
+        badge: 'أستاذ مساعد مورد',
+      })
+    }
+  }
+
+  return baseList
+}
+
 export { COL }
+

@@ -232,7 +232,7 @@ function FinanceReport({ id, from, to }) {
 
   if (id === 'trial-balance') return <TrialBalance balances={stmt.balances} lang={lang} />
   if (id === 'general-ledger') {
-    return <LedgerView journal={stmt.periodJournal} accounts={accounts} lang={lang} locale={locale} />
+    return <LedgerView journal={stmt.periodJournal} accounts={accounts} lang={lang} locale={locale} invoices={invoices} />
   }
   if (id === 'income-statement') {
     return (

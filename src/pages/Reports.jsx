@@ -40,6 +40,7 @@ export default function Reports() {
   const { t, locale } = useI18n()
   const { rows: invoices, loading } = useCollection(COL.invoices, 'date', 'desc')
   const { rows: expenses } = useCollection(COL.expenses, 'date', 'desc')
+  const { rows: vouchers } = useCollection(COL.vouchers, 'date', 'desc')
   const { rows: clients } = useCollection(COL.clients, 'name', 'asc')
   const { rows: expenseCategories } = useCollection(COL.expenseCategories, 'name', 'asc')
   const { rows: jobCosts } = useCollection(JOB_COSTS_COL, 'date', 'desc')
@@ -57,13 +58,32 @@ export default function Reports() {
   const [from, setFrom] = useState(monthStartISO())
   const [to, setTo] = useState(todayISO())
 
+  const allExpenses = useMemo(() => {
+    const list = [...expenses]
+    for (const v of vouchers) {
+      if (v.type !== 'payment') continue
+      if (v.sourceType === 'expense' && v.sourceId && expenses.some((e) => e.id === v.sourceId)) {
+        continue
+      }
+      list.push({
+        id: v.id,
+        date: v.date,
+        amount: toNumber(v.totalDebit || v.amount || 0),
+        description: v.description || v.notes || 'سند صرف',
+        categoryName: 'سند صرف',
+        source: 'voucher',
+      })
+    }
+    return list
+  }, [expenses, vouchers])
+
   const periodInvoices = useMemo(
     () => invoices.filter((invoice) => isWithin(invoice.date, from, to)),
     [invoices, from, to],
   )
   const periodExpenses = useMemo(
-    () => expenses.filter((expense) => isWithin(expense.date, from, to)),
-    [expenses, from, to],
+    () => allExpenses.filter((expense) => isWithin(expense.date, from, to)),
+    [allExpenses, from, to],
   )
 
   /* مصروفات الشركة الحقيقية تستبعد الإنفاق الإعلاني المموَّل من ميزانية عميل */

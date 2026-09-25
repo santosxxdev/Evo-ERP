@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { useI18n } from '../i18n'
 import { COL, createDoc, deleteDocById, updateDocById, useCollection } from '../lib/db'
 import { formatDate, formatMoney, round2, todayISO, toNumber } from '../lib/format'
@@ -14,6 +15,7 @@ import {
   cancelPurchaseInvoiceClientSide,
   createSupplierCreditNoteClientSide,
   applyVendorAdvanceClientSide,
+  deletePurchaseInvoiceClientSide,
 } from '../lib/clientVendors'
 import {
   Badge,
@@ -71,14 +73,22 @@ export default function Vendors() {
   const [addingCreditNote, setAddingCreditNote] = useState(null)
   const [addingAdvance, setAddingAdvance] = useState(null)
   const [applyingAdvance, setApplyingAdvance] = useState(null)
+  const [activeTab, setActiveTab] = useState('vendors')
+  const [showArchived, setShowArchived] = useState(false)
+  const [invoiceToDelete, setInvoiceToDelete] = useState(null)
   const [busy, setBusy] = useState(false)
   const [errorMsg, setErrorMsg] = useState(null)
 
+  const vendorMap = useMemo(() => new Map(vendors.map((v) => [v.id, v])), [vendors])
   const activeVendors = useMemo(() => vendors.filter((v) => !v.archived), [vendors])
+  const displayedVendors = useMemo(
+    () => (showArchived ? vendors : activeVendors),
+    [vendors, showArchived, activeVendors],
+  )
 
   const enriched = useMemo(
     () =>
-      activeVendors.map((vendor) => {
+      displayedVendors.map((vendor) => {
         const formal = formalVendorBalance(vendor.id, purchaseInvoices, supplierPayables)
         const legacy = vendorBalance(vendor.id, costs)
         return {
@@ -90,7 +100,7 @@ export default function Vendors() {
           earned: formal.totalPurchases,
         }
       }),
-    [activeVendors, purchaseInvoices, supplierPayables, costs],
+    [displayedVendors, purchaseInvoices, supplierPayables, costs],
   )
 
   const filtered = useMemo(() => {
@@ -106,6 +116,31 @@ export default function Vendors() {
   const totalDue = enriched.reduce((sum, vendor) => sum + vendor.formal.due, 0)
   const totalPaid = enriched.reduce((sum, vendor) => sum + vendor.formal.totalPaid, 0)
 
+  // Purchases metrics
+  const totalPurchasesAmount = useMemo(
+    () => purchaseInvoices.reduce((sum, inv) => sum + (inv.cancelled ? 0 : toNumber(inv.total)), 0),
+    [purchaseInvoices],
+  )
+  const totalPurchasesPaid = useMemo(
+    () => purchaseInvoices.reduce((sum, inv) => sum + (inv.cancelled ? 0 : toNumber(inv.paidAmount || 0)), 0),
+    [purchaseInvoices],
+  )
+  const totalPurchasesRemaining = useMemo(
+    () => Math.max(0, totalPurchasesAmount - totalPurchasesPaid),
+    [totalPurchasesAmount, totalPurchasesPaid],
+  )
+
+  const filteredPurchases = useMemo(() => {
+    const needle = query.trim().toLowerCase()
+    if (!needle) return purchaseInvoices
+    return purchaseInvoices.filter((inv) => {
+      const vName = vendorMap.get(inv.vendorId)?.name || ''
+      return [inv.number, vName, inv.notes, inv.description, inv.purchaseType].some((val) =>
+        String(val ?? '').toLowerCase().includes(needle),
+      )
+    })
+  }, [purchaseInvoices, vendorMap, query])
+
   async function save(values) {
     setBusy(true)
     setErrorMsg(null)
@@ -115,6 +150,18 @@ export default function Vendors() {
       setEditing(null)
     } catch (err) {
       setErrorMsg(err.message || 'حدث خطأ أثناء حفظ البيانات')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function unarchiveVendor(vendorId) {
+    setBusy(true)
+    setErrorMsg(null)
+    try {
+      await updateDocById(VENDORS_COL, vendorId, { archived: false })
+    } catch (err) {
+      setErrorMsg(err.message || 'حدث خطأ أثناء استعادة المورد')
     } finally {
       setBusy(false)
     }
@@ -142,12 +189,31 @@ export default function Vendors() {
     }
   }
 
+  async function handleDeleteInvoice() {
+    if (!invoiceToDelete) return
+    setBusy(true)
+    setErrorMsg(null)
+    try {
+      await deletePurchaseInvoiceClientSide({ purchaseInvoiceId: invoiceToDelete.id })
+      setInvoiceToDelete(null)
+    } catch (err) {
+      setErrorMsg(err.message || 'حدث خطأ أثناء حذف فاتورة الشراء')
+    } finally {
+      setBusy(false)
+    }
+  }
+
   if (loading) return <Loading />
 
   return (
     <div>
       <PageHeader title={t('vendors.title')} subtitle={t('vendors.subtitle')}>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
+          <Link to="/vendor-statement">
+            <Button variant="secondary">
+              حركة الحساب لكل مورد ←
+            </Button>
+          </Link>
           <Button variant="secondary" onClick={() => setAddingInvoice({})}>
             + فاتورة شراء جديدة
           </Button>
@@ -161,113 +227,354 @@ export default function Vendors() {
         </div>
       )}
 
-      {enriched.length > 0 && (
-        <div className="mb-5 grid gap-4 sm:grid-cols-3">
-          <StatCard label={t('vendors.count')} value={enriched.length} Icon={IconClients} />
-          <StatCard
-            label="إجمالي مستحقات الموردين (حساب 211)"
-            value={formatMoney(totalDue)}
-            suffix={t('common.currency')}
-            tone="text-amber-600 bg-amber-50"
-          />
-          <StatCard
-            label="إجمالي المسدد للموردين"
-            value={formatMoney(totalPaid)}
-            suffix={t('common.currency')}
-            tone="text-emerald-600 bg-emerald-50"
-          />
-        </div>
-      )}
+      {/* Tabs */}
+      <div className="mb-5 flex border-b border-slate-200">
+        <button
+          type="button"
+          onClick={() => {
+            setActiveTab('vendors')
+            setQuery('')
+          }}
+          className={`flex items-center gap-2 px-5 py-3 text-sm font-bold border-b-2 transition-all ${
+            activeTab === 'vendors'
+              ? 'border-brand-600 text-brand-600 bg-brand-50/40 rounded-t-lg'
+              : 'border-transparent text-slate-500 hover:text-slate-800'
+          }`}
+        >
+          <span>قائمة الموردين</span>
+          <span className="rounded-full bg-slate-200/70 px-2 py-0.5 text-xs font-semibold text-slate-700">
+            {activeVendors.length}
+          </span>
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            setActiveTab('purchases')
+            setQuery('')
+          }}
+          className={`flex items-center gap-2 px-5 py-3 text-sm font-bold border-b-2 transition-all ${
+            activeTab === 'purchases'
+              ? 'border-brand-600 text-brand-600 bg-brand-50/40 rounded-t-lg'
+              : 'border-transparent text-slate-500 hover:text-slate-800'
+          }`}
+        >
+          <span>فواتير الشراء (المشتريات)</span>
+          <span className="rounded-full bg-slate-200/70 px-2 py-0.5 text-xs font-semibold text-slate-700">
+            {purchaseInvoices.length}
+          </span>
+        </button>
+      </div>
 
-      {enriched.length === 0 ? (
-        <EmptyState
-          title={t('vendors.empty')}
-          message={t('vendors.emptyHint')}
-          action={<Button onClick={() => setEditing({})}>+ {t('vendors.add')}</Button>}
-        />
-      ) : (
+      {activeTab === 'vendors' ? (
         <>
-          <div className="mb-4">
-            <SearchInput value={query} onChange={setQuery} placeholder={t('vendors.search')} />
+          {enriched.length > 0 && (
+            <div className="mb-5 grid gap-4 sm:grid-cols-3">
+              <StatCard label={t('vendors.count')} value={activeVendors.length} Icon={IconClients} />
+              <StatCard
+                label="إجمالي مستحقات الموردين (حساب 211)"
+                value={formatMoney(totalDue)}
+                suffix={t('common.currency')}
+                tone="text-amber-600 bg-amber-50"
+              />
+              <StatCard
+                label="إجمالي المسدد للموردين"
+                value={formatMoney(totalPaid)}
+                suffix={t('common.currency')}
+                tone="text-emerald-600 bg-emerald-50"
+              />
+            </div>
+          )}
+
+          <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+            <div className="flex-1 min-w-[240px]">
+              <SearchInput value={query} onChange={setQuery} placeholder={t('vendors.search')} />
+            </div>
+            {vendors.some((v) => v.archived) && (
+              <label className="flex items-center gap-2 text-xs font-semibold text-slate-600 cursor-pointer bg-slate-50 border border-slate-200 px-3 py-2 rounded-lg hover:bg-slate-100">
+                <input
+                  type="checkbox"
+                  checked={showArchived}
+                  onChange={(e) => setShowArchived(e.target.checked)}
+                  className="rounded border-slate-300 text-brand-600 focus:ring-brand-500"
+                />
+                عرض الموردين المؤرشفين ({vendors.filter((v) => v.archived).length})
+              </label>
+            )}
           </div>
 
-          <TableWrap>
-            <thead>
-              <tr>
-                <Th>{t('common.name')}</Th>
-                <Th>{t('vendors.specialty')}</Th>
-                <Th>{t('common.phone')}</Th>
-                <Th>فواتير الشراء</Th>
-                <Th>إجمالي المشتروات</Th>
-                <Th>المستحق (ذمم 211)</Th>
-                <Th className="w-px">{t('common.actions')}</Th>
-              </tr>
-            </thead>
-            <tbody>
-              {filtered.map((vendor) => (
-                <tr key={vendor.id}>
-                  <Td className="font-semibold text-slate-800">{vendor.name}</Td>
-                  <Td>
-                    {vendor.specialty ? (
-                      <Badge tone="brand">{vendorTypeLabel(vendor.specialty, t)}</Badge>
-                    ) : (
-                      <span className="text-slate-400">—</span>
-                    )}
-                  </Td>
-                  <Td>
-                    <span className="num text-slate-600">{vendor.phone || '—'}</span>
-                  </Td>
-                  <Td>
-                    <span className="num text-slate-600">{vendor.formal.count}</span>
-                  </Td>
-                  <Td>
-                    <span className="num text-slate-700">{formatMoney(vendor.formal.totalPurchases)}</span>
-                  </Td>
-                  <Td>
-                    <span
-                      className={`num font-bold ${
-                        vendor.formal.due > 0 ? 'text-amber-600' : 'text-emerald-600'
-                      }`}
-                    >
-                      {formatMoney(vendor.formal.due)}
-                    </span>
-                  </Td>
-                  <Td>
-                    <div className="flex gap-1.5">
-                      <button
-                        type="button"
-                        onClick={() => setViewing(vendor)}
-                        className="rounded-lg px-2.5 py-1.5 text-xs font-semibold text-brand-700 hover:bg-brand-50"
-                      >
-                        كشف الحساب
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setAddingInvoice({ vendorId: vendor.id })}
-                        className="rounded-lg px-2.5 py-1.5 text-xs font-semibold text-emerald-700 hover:bg-emerald-50"
-                      >
-                        + فاتورة
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setEditing(vendor)}
-                        className="rounded-lg px-2.5 py-1.5 text-xs font-semibold text-slate-600 hover:bg-slate-100"
-                      >
-                        {t('common.edit')}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setRemoving(vendor)}
-                        className="rounded-lg px-2.5 py-1.5 text-xs font-semibold text-red-600 hover:bg-red-50"
-                      >
-                        {t('common.delete')}
-                      </button>
-                    </div>
-                  </Td>
+          {filtered.length === 0 ? (
+            <EmptyState
+              title={t('vendors.empty')}
+              message={t('vendors.emptyHint')}
+              action={<Button onClick={() => setEditing({})}>+ {t('vendors.add')}</Button>}
+            />
+          ) : (
+            <TableWrap>
+              <thead>
+                <tr>
+                  <Th>{t('common.name')}</Th>
+                  <Th>{t('vendors.specialty')}</Th>
+                  <Th>{t('common.phone')}</Th>
+                  <Th>فواتير الشراء</Th>
+                  <Th>إجمالي المشتروات</Th>
+                  <Th>المستحق (ذمم 211)</Th>
+                  <Th className="w-px">{t('common.actions')}</Th>
                 </tr>
-              ))}
-            </tbody>
-          </TableWrap>
+              </thead>
+              <tbody>
+                {filtered.map((vendor) => (
+                  <tr key={vendor.id} className={vendor.archived ? 'bg-slate-50/70' : ''}>
+                    <Td className="font-semibold text-slate-800">
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setViewing(vendor)}
+                          className="text-start font-semibold text-slate-800 hover:text-brand-600"
+                        >
+                          {vendor.name}
+                        </button>
+                        {vendor.archived && (
+                          <Badge tone="neutral">مؤرشف</Badge>
+                        )}
+                      </div>
+                    </Td>
+                    <Td>
+                      {vendor.specialty ? (
+                        <Badge tone="brand">{vendorTypeLabel(vendor.specialty, t)}</Badge>
+                      ) : (
+                        <span className="text-slate-400">—</span>
+                      )}
+                    </Td>
+                    <Td>
+                      <span className="num text-slate-600">{vendor.phone || '—'}</span>
+                    </Td>
+                    <Td>
+                      <span className="num text-slate-600">{vendor.formal.count}</span>
+                    </Td>
+                    <Td>
+                      <span className="num text-slate-700">{formatMoney(vendor.formal.totalPurchases)}</span>
+                    </Td>
+                    <Td>
+                      <span
+                        className={`num font-bold ${
+                          vendor.formal.due > 0 ? 'text-amber-600' : 'text-emerald-600'
+                        }`}
+                      >
+                        {formatMoney(vendor.formal.due)}
+                      </span>
+                    </Td>
+                    <Td>
+                      <div className="flex gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => setViewing(vendor)}
+                          className="rounded-lg px-2.5 py-1.5 text-xs font-semibold text-brand-700 hover:bg-brand-50 inline-block"
+                        >
+                          كشف الحساب
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setAddingInvoice({ vendorId: vendor.id })}
+                          className="rounded-lg px-2.5 py-1.5 text-xs font-semibold text-emerald-700 hover:bg-emerald-50"
+                        >
+                          + فاتورة
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setEditing(vendor)}
+                          className="rounded-lg px-2.5 py-1.5 text-xs font-semibold text-slate-600 hover:bg-slate-100"
+                        >
+                          {t('common.edit')}
+                        </button>
+                        {vendor.archived ? (
+                          <button
+                            type="button"
+                            onClick={() => unarchiveVendor(vendor.id)}
+                            className="rounded-lg px-2.5 py-1.5 text-xs font-semibold text-sky-700 hover:bg-sky-50"
+                          >
+                            استعادة
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => setRemoving(vendor)}
+                            className="rounded-lg px-2.5 py-1.5 text-xs font-semibold text-red-600 hover:bg-red-50"
+                          >
+                            {t('common.delete')}
+                          </button>
+                        )}
+                      </div>
+                    </Td>
+                  </tr>
+                ))}
+              </tbody>
+            </TableWrap>
+          )}
+        </>
+      ) : (
+        /* Purchases Tab */
+        <>
+          <div className="mb-5 grid gap-4 sm:grid-cols-4">
+            <StatCard label="عدد الفواتير" value={purchaseInvoices.length} />
+            <StatCard
+              label="إجمالي المشتريات"
+              value={formatMoney(totalPurchasesAmount)}
+              suffix={t('common.currency')}
+            />
+            <StatCard
+              label="إجمالي المسدد"
+              value={formatMoney(totalPurchasesPaid)}
+              suffix={t('common.currency')}
+              tone="text-emerald-600 bg-emerald-50"
+            />
+            <StatCard
+              label="المستحق غير المسدد"
+              value={formatMoney(totalPurchasesRemaining)}
+              suffix={t('common.currency')}
+              tone="text-amber-600 bg-amber-50"
+            />
+          </div>
+
+          <div className="mb-4">
+            <SearchInput
+              value={query}
+              onChange={setQuery}
+              placeholder="ابحث برقم فاتورة الشراء أو اسم المورد أو الملاحظات..."
+            />
+          </div>
+
+          {filteredPurchases.length === 0 ? (
+            <EmptyState
+              title="لا توجد فواتير شراء"
+              message="لم يتم تسجيل أي فواتير شراء مطابقة أو مضافة حتى الآن"
+              action={
+                <Button onClick={() => setAddingInvoice({})}>+ فاتورة شراء جديدة</Button>
+              }
+            />
+          ) : (
+            <TableWrap>
+              <thead>
+                <tr>
+                  <Th>رقم الفاتورة</Th>
+                  <Th>التاريخ</Th>
+                  <Th>المورد</Th>
+                  <Th>البيان / الملاحظات</Th>
+                  <Th>الإجمالي</Th>
+                  <Th>المسدد</Th>
+                  <Th>المتبقي</Th>
+                  <Th>الحالة</Th>
+                  <Th className="w-px">{t('common.actions')}</Th>
+                </tr>
+              </thead>
+              <tbody>
+                {filteredPurchases.map((inv) => {
+                  const vendor = vendorMap.get(inv.vendorId)
+                  const total = toNumber(inv.total)
+                  const paid = toNumber(inv.paidAmount || 0)
+                  const remaining = Math.max(0, total - paid)
+                  const isCancelled = Boolean(inv.cancelled)
+                  const isPaidFull = !isCancelled && remaining <= 0.01 && total > 0
+                  const isPartial = !isCancelled && paid > 0 && remaining > 0.01
+
+                  return (
+                    <tr key={inv.id} className={isCancelled ? 'bg-slate-50 opacity-60' : ''}>
+                      <Td className="font-mono text-xs font-bold text-slate-900">
+                        {inv.number || `PUR-${inv.id.slice(0, 6)}`}
+                      </Td>
+                      <Td className="num text-xs text-slate-600">
+                        {inv.date || '—'}
+                      </Td>
+                      <Td>
+                        {vendor ? (
+                          <button
+                            type="button"
+                            onClick={() => setViewing(vendor)}
+                            className="font-semibold text-slate-800 hover:text-brand-600 text-start"
+                          >
+                            {vendor.name}
+                          </button>
+                        ) : (
+                          <span className="text-slate-400">مورد غير محدد</span>
+                        )}
+                      </Td>
+                      <Td>
+                        <span className="text-xs text-slate-600 truncate max-w-xs block">
+                          {inv.notes || inv.description || (inv.purchaseType === 'asset' ? 'أصل ثابت' : inv.purchaseType === 'inventory' ? 'مخزون' : 'خدمات وتجهيزات')}
+                        </span>
+                      </Td>
+                      <Td>
+                        <span className="num font-semibold text-slate-800">
+                          {formatMoney(total)}
+                        </span>
+                      </Td>
+                      <Td>
+                        <span className="num text-emerald-600">
+                          {formatMoney(paid)}
+                        </span>
+                      </Td>
+                      <Td>
+                        <span
+                          className={`num font-bold ${
+                            remaining > 0 ? 'text-amber-600' : 'text-slate-400'
+                          }`}
+                        >
+                          {formatMoney(remaining)}
+                        </span>
+                      </Td>
+                      <Td>
+                        {isCancelled ? (
+                          <Badge tone="neutral">ملغاة</Badge>
+                        ) : isPaidFull ? (
+                          <Badge tone="success">مسددة بالكامل</Badge>
+                        ) : isPartial ? (
+                          <Badge tone="warning">سداد جزئي</Badge>
+                        ) : (
+                          <Badge tone="danger">غير مسددة</Badge>
+                        )}
+                      </Td>
+                      <Td>
+                        <div className="flex gap-1.5">
+                          {!isCancelled && remaining > 0 && (
+                            <button
+                              type="button"
+                              onClick={() => setAddingPayment(inv)}
+                              className="rounded-lg px-2.5 py-1.5 text-xs font-semibold text-emerald-700 hover:bg-emerald-50"
+                            >
+                              + سداد
+                            </button>
+                          )}
+                          {!isCancelled && (
+                            <button
+                              type="button"
+                              onClick={() => setAddingReturn(inv)}
+                              className="rounded-lg px-2.5 py-1.5 text-xs font-semibold text-amber-700 hover:bg-amber-50"
+                            >
+                              + مردود
+                            </button>
+                          )}
+                          {vendor && (
+                            <Link
+                              to={`/vendor-statement?vendorId=${vendor.id}`}
+                              className="rounded-lg px-2.5 py-1.5 text-xs font-semibold text-brand-700 hover:bg-brand-50 inline-block"
+                            >
+                              كشف الحساب
+                            </Link>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => setInvoiceToDelete(inv)}
+                            className="rounded-lg px-2.5 py-1.5 text-xs font-semibold text-red-600 hover:bg-red-50"
+                          >
+                            حذف
+                          </button>
+                        </div>
+                      </Td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </TableWrap>
+          )}
         </>
       )}
 

@@ -27,7 +27,7 @@ import {
   validatePayrollPeriod
 } from './payrollEngine.js';
 
-export const PAYROLL_CUTOVER_MONTH = '2026-10';
+export const PAYROLL_CUTOVER_MONTH = '2025-01';
 
 /**
  * Lifecycle state transition matrix.

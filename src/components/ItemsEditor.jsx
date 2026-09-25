@@ -144,7 +144,7 @@ export default function ItemsEditor({ items, setItems, services = [], vendors = 
                     onClick={() => setOpenCostIndex(isCostOpen ? null : index)}
                     className="flex items-center gap-1 font-bold text-brand-700 hover:underline"
                   >
-                    {hasSupplier ? `🏭 ${item.supplierName || 'مورد محدد'}` : '+ تخصيص مورد / فريلانسر وتكلفة'}
+                    {hasSupplier ? (item.supplierName || 'مورد محدد') : '+ تخصيص مورد / فريلانسر وتكلفة'}
                     {item.expectedCost > 0 && <span className="text-slate-500 font-normal ms-1">(متوقع: {formatMoney(item.expectedCost)})</span>}
                   </button>
                 </div>

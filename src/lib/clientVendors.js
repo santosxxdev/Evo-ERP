@@ -110,7 +110,14 @@ export async function createPurchaseInvoiceClientSide({ payload, uid }) {
 
     const lines = [
       { accountId: targetAccount.id, debit: finalSubtotal, credit: 0 },
-      { accountId: vendorPayableAcct.id, debit: 0, credit: finalTotal },
+      {
+        accountId: vendorPayableAcct.id,
+        debit: 0,
+        credit: finalTotal,
+        subLedgerType: 'vendor',
+        subLedgerId: vendorId,
+        subLedgerName: payload.vendorName || '',
+      },
     ]
     if (finalTax > 0 && taxAcct) {
       lines.push({ accountId: taxAcct.id, debit: finalTax, credit: 0 })
@@ -208,7 +215,13 @@ export async function createPurchaseInvoiceClientSide({ payload, uid }) {
         sourceId: vpRef.id,
         action: 'payment',
         lines: [
-          { accountId: vendorPayableAcct.id, debit: paymentAmount, credit: 0 },
+          {
+            accountId: vendorPayableAcct.id,
+            debit: paymentAmount,
+            credit: 0,
+            subLedgerType: 'vendor',
+            subLedgerId: vendorId,
+          },
           { accountId: treasuryAccount.id, debit: 0, credit: paymentAmount },
         ],
         totalDebit: paymentAmount,
@@ -270,7 +283,13 @@ export async function createVendorPaymentClientSide({ payload, uid }) {
       sourceId: vpRef.id,
       action: 'payment',
       lines: [
-        { accountId: vendorPayableAcct.id, debit: paymentAmount, credit: 0 },
+        {
+          accountId: vendorPayableAcct.id,
+          debit: paymentAmount,
+          credit: 0,
+          subLedgerType: 'vendor',
+          subLedgerId: vendorId,
+        },
         { accountId: treasuryAccount.id, debit: 0, credit: paymentAmount },
       ],
       totalDebit: paymentAmount,
@@ -326,7 +345,13 @@ export async function createVendorAdvanceClientSide({ payload, uid }) {
       sourceId: vaRef.id,
       action: 'advance',
       lines: [
-        { accountId: vendorAdvanceAcct.id, debit: advAmount, credit: 0 },
+        {
+          accountId: vendorAdvanceAcct.id,
+          debit: advAmount,
+          credit: 0,
+          subLedgerType: 'vendor',
+          subLedgerId: vendorId,
+        },
         { accountId: treasuryAccount.id, debit: 0, credit: advAmount },
       ],
       totalDebit: advAmount,
@@ -355,7 +380,13 @@ export async function createPurchaseReturnClientSide({ payload, uid }) {
     createdId = prRef.id
 
     const lines = [
-      { accountId: vendorPayableAcct.id, debit: finalTotal, credit: 0 },
+      {
+        accountId: vendorPayableAcct.id,
+        debit: finalTotal,
+        credit: 0,
+        subLedgerType: 'vendor',
+        subLedgerId: vendorId,
+      },
       { accountId: targetAccount.id, debit: 0, credit: finalSubtotal },
     ]
 
@@ -459,8 +490,20 @@ export async function applyVendorAdvanceClientSide({ payload, uid }) {
       sourceId: applyRef.id,
       action: 'apply',
       lines: [
-        { accountId: vendorPayableAcct.id, debit: applyAmount, credit: 0 },
-        { accountId: vendorAdvanceAcct.id, debit: 0, credit: applyAmount },
+        {
+          accountId: vendorPayableAcct.id,
+          debit: applyAmount,
+          credit: 0,
+          subLedgerType: 'vendor',
+          subLedgerId: advData.vendorId,
+        },
+        {
+          accountId: vendorAdvanceAcct.id,
+          debit: 0,
+          credit: applyAmount,
+          subLedgerType: 'vendor',
+          subLedgerId: advData.vendorId,
+        },
       ],
       totalDebit: applyAmount,
       totalCredit: applyAmount,

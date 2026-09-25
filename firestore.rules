@@ -112,6 +112,11 @@ service cloud.firestore {
       allow write, delete: if opsWrite();
     }
 
+    match /salesPeriods/{id} {
+      allow read: if member();
+      allow create, update, delete: if finance();
+    }
+
     match /attendance/{id} {
       allow read: if member();
       allow write, delete: if finance();
@@ -231,7 +236,8 @@ service cloud.firestore {
     match /accountingTransactions/{id} {
       allow read: if finance();
       allow create: if finance();
-      allow update, delete: if false;
+      allow update: if false;
+      allow delete: if finance();
     }
 
     match /purchaseInvoices/{id} {

@@ -14,6 +14,7 @@ import {
   ACCOUNTS_COL,
   ACCOUNT_TYPES,
   accountLabel,
+  buildCleanAccounts,
   buildTree,
   flattenTree,
   getNormalBalance,
@@ -27,7 +28,7 @@ import {
 import { JOB_COSTS_COL, VENDORS_COL } from './Vendors'
 import { JOURNAL_COL } from '../lib/journal'
 import { ASSETS_COL, ASSET_USAGE_COL, MAINTENANCE_COL } from '../lib/assets'
-import { accountBalances, accountMovements, buildJournal } from '../lib/ledger'
+import { accountBalances, accountMovements, buildJournal, getMovementDocUrl } from '../lib/ledger'
 import { formatDate, formatMoney, isWithin, monthStartISO, round2, todayISO, toNumber } from '../lib/format'
 import SearchableSelect from '../components/SearchableSelect'
 import {
@@ -48,13 +49,19 @@ import {
   Th,
 } from '../components/ui'
 import {
+  IconCheck,
   IconChevronDown,
   IconExport,
   IconFileText,
   IconFolder,
   IconFolderOpen,
+  IconGrid,
   IconImport,
+  IconLayers,
+  IconList,
   IconPencil,
+  IconPlus,
+  IconScale,
   IconTrash,
 } from '../components/Icons'
 import PrintDocument from '../components/PrintDocument'
@@ -96,6 +103,9 @@ export default function Accounting() {
   const { rows: assetUsage } = useCollection(ASSET_USAGE_COL, 'date', 'desc')
   const { rows: clients } = useCollection(COL.clients, 'name', 'asc')
   const { rows: employees } = useCollection(COL.employees, 'name', 'asc')
+  const { rows: purchaseInvoices } = useCollection('purchaseInvoices', 'date', 'desc')
+  const { rows: vendorPayments } = useCollection('vendorPayments', 'date', 'desc')
+  const { rows: accountingTransactions } = useCollection(COL.accountingTransactions, 'transactionDate', 'desc')
 
   useEffect(() => {
     console.log('[Accounting Diagnostic Logs]:', {
@@ -105,8 +115,10 @@ export default function Accounting() {
       invoicesCount: invoices.length,
       expensesCount: expenses.length,
       paymentsCount: payments.length,
+      purchaseInvoicesCount: purchaseInvoices.length,
+      accountingTransactionsCount: accountingTransactions.length,
     })
-  }, [accounts, loadingAccounts, errorAccounts, invoices, expenses, payments])
+  }, [accounts, loadingAccounts, errorAccounts, invoices, expenses, payments, purchaseInvoices, accountingTransactions])
 
   const { view } = useParams()
   const isJournal = view === 'journal'
@@ -117,10 +129,17 @@ export default function Accounting() {
 
   const [showFullReportModal, setShowFullReportModal] = useState(false)
 
-  /* أرقام الفواتير للدفعات، لتظهر في القيود */
+  /* أرقام الفواتير وأسماء العملاء للدفعات، لتظهر في القيود وكشوف الحساب */
   const enrichedPayments = useMemo(() => {
-    const numbers = new Map(invoices.map((invoice) => [invoice.id, invoice.number]))
-    return payments.map((payment) => ({ ...payment, invoiceNumber: numbers.get(payment.invoiceId) ?? '' }))
+    const invoiceMap = new Map(invoices.map((invoice) => [invoice.id, invoice]))
+    return payments.map((payment) => {
+      const inv = invoiceMap.get(payment.invoiceId)
+      return {
+        ...payment,
+        invoiceNumber: payment.invoiceNumber || inv?.number || '',
+        clientName: payment.clientName || inv?.clientName || '',
+      }
+    })
   }, [payments, invoices])
 
   const journal = useMemo(
@@ -138,9 +157,31 @@ export default function Accounting() {
         assets,
         maintenance,
         assetUsage,
+        accountingTransactions,
+        clients,
+        purchaseInvoices,
+        vendorPayments,
         settings,
       }),
-    [invoices, enrichedPayments, expenses, accounts, expenseCategories, paymentMethods, jobCosts, vendors, vouchers, assets, maintenance, assetUsage, settings],
+    [
+      invoices,
+      enrichedPayments,
+      expenses,
+      accounts,
+      expenseCategories,
+      paymentMethods,
+      jobCosts,
+      vendors,
+      vouchers,
+      assets,
+      maintenance,
+      assetUsage,
+      accountingTransactions,
+      clients,
+      purchaseInvoices,
+      vendorPayments,
+      settings,
+    ],
   )
 
   const periodJournal = useMemo(
@@ -153,7 +194,7 @@ export default function Accounting() {
   const filteredJournal = useMemo(() => {
     if (!journalTerm) return periodJournal
     return periodJournal.filter((entry) =>
-      [entry.ref, entry.description, t(`acct.ref.${entry.refType}`), ...entry.lines.map((line) => accountLabel(line.account, lang))]
+      [entry.ref, entry.description, formatRefType(entry.refType, t), ...entry.lines.map((line) => accountLabel(line.account, lang))]
         .filter(Boolean)
         .join(' ')
         .toLowerCase()
@@ -292,7 +333,21 @@ export default function Accounting() {
 
       {isJournal
         ? <JournalView entries={filteredJournal} lang={lang} locale={locale} />
-        : <AccountTree accounts={accounts} cleanAccounts={cleanAccounts} clients={clients} employees={employees} vendors={vendors} balances={balances} journal={journal} settings={settings} lang={lang} locale={locale} />}
+        : (
+          <AccountTree
+            accounts={accounts}
+            cleanAccounts={cleanAccounts}
+            clients={clients}
+            employees={employees}
+            vendors={vendors}
+            balances={balances}
+            journal={journal}
+            settings={settings}
+            invoices={invoices}
+            lang={lang}
+            locale={locale}
+          />
+        )}
 
       <FullTreeReportModal
         open={showFullReportModal}
@@ -385,7 +440,7 @@ export function CashFlowStatement({ flow, locale }) {
                 <tr key={`${row.id}-${index}`}>
                   <Td className="whitespace-nowrap text-slate-600">{formatDate(row.date, locale)}</Td>
                   <Td>
-                    <Badge tone="slate">{t(`acct.ref.${row.refType}`)}</Badge>
+                    <Badge tone="slate">{formatRefType(row.refType, t)}</Badge>
                     <span className="num ms-2 text-xs font-bold text-slate-700">{row.ref}</span>
                   </Td>
                   <Td className="text-slate-600">{row.description || '—'}</Td>
@@ -491,6 +546,36 @@ function AccountDetail({ account, balance, kids, lang }) {
   )
 }
 
+export function formatRefType(refType, t) {
+  if (!refType) return '—'
+  const key = `acct.ref.${refType}`
+  const translated = typeof t === 'function' ? t(key) : key
+  if (translated && !translated.startsWith('acct.ref.')) return translated
+
+  const map = {
+    purchaseInvoice: 'فاتورة مشتريات',
+    vendorPayment: 'سداد مورد',
+    vendorAdvance: 'دفعة مقدمة لمورد',
+    purchaseReturn: 'مردودات مشتريات',
+    vendorAdvanceApp: 'تسوية دفعة مقدمة',
+    invoice: 'فاتورة',
+    payment: 'تحصيل',
+    expense: 'مصروف',
+    cost: 'تكلفة شغل',
+    jobCosts: 'تكلفة أمر عمل',
+    creditNote: 'إشعار خصم',
+    manual: 'قيد يدوي',
+    employee_salary: 'راتب موظف',
+    employee_advance_recovery: 'استرداد سلفة',
+    payrollRun: 'مسير رواتب',
+    invoice_item_cost: 'تكلفة بند فاتورة',
+    asset: 'شراء أصل/معدة',
+    depreciation: 'إهلاك',
+    maintenance: 'صيانة',
+  }
+  return map[refType] || refType
+}
+
 function downloadCSV(filename, headers, rows) {
   const escapeCell = (cell) => {
     if (cell === null || cell === undefined) return '""'
@@ -515,18 +600,21 @@ function downloadCSV(filename, headers, rows) {
 function exportAccountCSV(account, movements, t, locale, from = '', to = '') {
   const isGroup = account?.isGroup || movements.some((m) => m.subAccountCode)
   const headers = isGroup
-    ? ['التاريخ', 'كود الحساب الفرعي', 'اسم الحساب الفرعي', 'المستند / المرجع', 'نوع الحركة', 'البيان / الوصف', 'مدين (SAR)', 'دائن (SAR)', 'الرصيد التراكمي (SAR)']
-    : ['التاريخ', 'المستند / المرجع', 'نوع الحركة', 'البيان / الوصف', 'مدين (SAR)', 'دائن (SAR)', 'الرصيد التراكمي (SAR)']
+    ? ['التاريخ', 'كود الحساب الفرعي', 'اسم الحساب الفرعي', 'نوع المستند', 'رقم المستند / الفاتورة', 'العميل / الطرف المعني', 'البيان / الوصف', 'مدين (SAR)', 'دائن (SAR)', 'الرصيد التراكمي (SAR)']
+    : ['التاريخ', 'نوع المستند', 'رقم المستند / الفاتورة', 'العميل / الطرف المعني', 'البيان / الوصف', 'مدين (SAR)', 'دائن (SAR)', 'الرصيد التراكمي (SAR)']
 
   const totalDebit = round2(movements.reduce((s, m) => s + toNumber(m.debit), 0))
   const totalCredit = round2(movements.reduce((s, m) => s + toNumber(m.credit), 0))
   const finalBalance = movements.length > 0 ? movements.at(-1).balance : 0
 
   const rows = movements.map((m) => {
+    const docNum = m.invoiceNumber || m.ref || '—'
+    const party = m.clientName || m.vendorName || m.partyName || m.subLedgerName || '—'
     const base = [
       formatDate(m.date, locale),
-      m.ref || '—',
-      t(`acct.ref.${m.refType}`) || m.refType || '—',
+      formatRefType(m.refType, t),
+      docNum,
+      party,
       m.description || '—',
       toNumber(m.debit),
       toNumber(m.credit),
@@ -539,8 +627,8 @@ function exportAccountCSV(account, movements, t, locale, from = '', to = '') {
   })
 
   const totalRow = isGroup
-    ? ['المجموع الإجمالي', '—', '—', '—', '—', 'إجمالي الفترة', totalDebit, totalCredit, finalBalance]
-    : ['المجموع الإجمالي', '—', '—', 'إجمالي الفترة', totalDebit, totalCredit, finalBalance]
+    ? ['المجموع الإجمالي', '—', '—', '—', '—', '—', 'إجمالي الفترة', totalDebit, totalCredit, finalBalance]
+    : ['المجموع الإجمالي', '—', '—', '—', 'إجمالي الفترة', totalDebit, totalCredit, finalBalance]
 
   rows.push(totalRow)
 
@@ -567,104 +655,97 @@ function exportTreeCSV(accounts, rolled, t, lang) {
 
 
 
-function TreeNavNode({ node, expanded, toggle, selected, onSelect, onAddChild, lang }) {
-  const isGroup = node.isGroup || (node.children && node.children.length > 0)
-  const code = String(node.code)
-  const isOpen = expanded.has(code)
-  const isSelected = selected?.id === node.id
+export const DaftraFolderIcon = ({ className = 'w-7 h-7 sm:w-8 sm:h-8' }) => (
+  <svg className={className} viewBox="0 0 24 24" fill="currentColor">
+    <path d="M19.5 21a3 3 0 0 0 3-3v-9a3 3 0 0 0-3-3h-5.379a.75.75 0 0 1-.53-.22L11.47 3.66A2.25 2.25 0 0 0 9.879 3H4.5A3 3 0 0 0 1.5 6v12a3 3 0 0 0 3 3h15Z" />
+  </svg>
+)
 
-  const handleRowClick = () => {
-    onSelect(node)
-    if (isGroup) {
-      if (!isOpen) {
-        toggle(code)
-      } else if (isSelected) {
-        toggle(code)
-      }
-    }
-  }
+export const DaftraDocIcon = ({ className = 'w-6 h-6' }) => (
+  <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6">
+    <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z" />
+    <path strokeLinecap="round" strokeLinejoin="round" d="M9 13.5h6m-6 3h4" />
+  </svg>
+)
+
+function DaftraTreeItem({
+  node,
+  expanded,
+  toggle,
+  currentParentCode,
+  onNavigate,
+  lang,
+  rolled,
+  childCount,
+  level = 1,
+}) {
+  const code = String(node.code)
+  const isGroup = node.isGroup || (node.children && node.children.length > 0)
+  const isOpen = expanded.has(code)
+  const isCurrent = currentParentCode === code
 
   return (
-    <div className="group/node select-none text-xs">
+    <div className="select-none text-xs">
       <div
-        className={`flex items-center justify-between rounded-xl px-2.5 py-1.5 transition cursor-pointer ${
-          isSelected
-            ? 'bg-brand-600 text-white font-bold shadow-sm'
-            : isGroup
-            ? 'font-bold text-slate-800 hover:bg-slate-100'
-            : 'text-slate-600 hover:bg-slate-50'
+        onClick={() => onNavigate(node)}
+        className={`flex items-center gap-1.5 py-1.5 px-2 rounded-lg cursor-pointer transition ${
+          isCurrent
+            ? 'bg-sky-100 dark:bg-sky-950/80 text-sky-800 dark:text-sky-200 font-bold'
+            : 'text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800/60'
         }`}
-        onClick={handleRowClick}
+        style={{ paddingInlineStart: `${(level - 1) * 14 + 8}px` }}
       >
-        <div className="flex items-center gap-1.5 truncate min-w-0">
-          {isGroup ? (
-            <button
-              type="button"
-              onClick={(e) => {
-                e.stopPropagation()
-                toggle(code)
-              }}
-              className="grid h-5 w-5 shrink-0 place-items-center rounded-md hover:bg-slate-200/60 text-slate-400 hover:text-slate-700 transition"
-              title={isOpen ? 'طي القسم' : 'توسيع القسم'}
+        {isGroup ? (
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation()
+              toggle(code)
+            }}
+            className="w-4 h-4 shrink-0 grid place-items-center text-slate-400 hover:text-slate-700 dark:hover:text-slate-200"
+          >
+            <svg
+              className={`w-3 h-3 transition-transform duration-200 ${isOpen ? 'rotate-90 text-sky-600' : 'rtl:-rotate-180'}`}
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
             >
-              <svg
-                className={`h-3.5 w-3.5 transition-transform duration-200 ${isOpen ? 'rotate-90 text-brand-600 font-extrabold' : 'rtl:-rotate-180'}`}
-                fill="none"
-                stroke="currentColor"
-                viewBox="0 0 24 24"
-              >
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M9 5l7 7-7 7" />
-              </svg>
-            </button>
-          ) : (
-            <span className="w-5 shrink-0" />
-          )}
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M9 5l7 7-7 7" />
+            </svg>
+          </button>
+        ) : (
+          <span className="w-4 shrink-0" />
+        )}
 
-          {isGroup ? (
-            <IconFolder className={`h-4 w-4 shrink-0 ${isSelected ? 'text-white' : isOpen ? 'text-brand-500' : 'text-amber-500'}`} />
-          ) : (
-            <IconFileText className={`h-4 w-4 shrink-0 ${isSelected ? 'text-white' : 'text-slate-400'}`} />
-          )}
-          <span className="truncate">{accountLabel(node, lang)}</span>
-        </div>
+        {isGroup ? (
+          <svg className="w-4 h-4 shrink-0 text-sky-600 dark:text-sky-400" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M19.5 21a3 3 0 0 0 3-3v-9a3 3 0 0 0-3-3h-5.379a.75.75 0 0 1-.53-.22L11.47 3.66A2.25 2.25 0 0 0 9.879 3H4.5A3 3 0 0 0 1.5 6v12a3 3 0 0 0 3 3h15Z" />
+          </svg>
+        ) : (
+          <svg className="w-3.5 h-3.5 shrink-0 text-slate-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6">
+            <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z" />
+          </svg>
+        )}
 
-        <div className="flex items-center gap-1 shrink-0 ms-2">
-          {isGroup && onAddChild && (
-            <button
-              type="button"
-              onClick={(e) => {
-                e.stopPropagation()
-                onAddChild(node)
-              }}
-              title="إضافة حساب فرعي أو مجموعة بداخل هذا الحساب"
-              className={`grid h-5 w-5 place-items-center rounded-md text-xs font-black transition ${
-                isSelected
-                  ? 'bg-white/20 text-white hover:bg-white/30'
-                  : 'bg-emerald-50 text-emerald-700 hover:bg-emerald-600 hover:text-white border border-emerald-200/60'
-              }`}
-            >
-              +
-            </button>
-          )}
-
-          <span className={`num text-[11px] font-bold ${isSelected ? 'text-brand-100' : 'text-slate-400'}`}>
-            {node.code}
-          </span>
-        </div>
+        <span className={`truncate ${level === 1 ? 'font-bold text-slate-900 dark:text-white' : ''}`}>
+          {accountLabel(node, lang)}
+        </span>
       </div>
 
       {isGroup && isOpen && node.children && node.children.length > 0 && (
-        <div className="mr-3 border-r-2 border-slate-200/80 pr-1 space-y-0.5 mt-0.5">
+        <div className="relative border-r border-slate-200/80 dark:border-slate-800/80 mr-3.5">
           {node.children.map((child) => (
-            <TreeNavNode
+            <DaftraTreeItem
               key={child.id}
               node={child}
               expanded={expanded}
               toggle={toggle}
-              selected={selected}
-              onSelect={onSelect}
-              onAddChild={onAddChild}
+              currentParentCode={currentParentCode}
+              onNavigate={onNavigate}
               lang={lang}
+              rolled={rolled}
+              childCount={childCount}
+              level={level + 1}
             />
           ))}
         </div>
@@ -673,262 +754,169 @@ function TreeNavNode({ node, expanded, toggle, selected, onSelect, onAddChild, l
   )
 }
 
-export function buildCleanAccounts(accounts = [], clients = [], employees = [], vendors = []) {
-  const empMap = new Map((employees || []).map((e) => [e.id, e]))
-  const map = new Map()
-  for (const account of accounts) {
-    const codeKey = String(account.code)
-    if (codeKey === '11010201' || (account.name || '').includes('البنكي الرئيسي') || (account.name || '').includes('البنكى الرئيسى')) {
-      continue
-    }
-    if (!map.has(codeKey)) {
-      map.set(codeKey, account)
+function DaftraAccountRow({
+  account,
+  onDrillDown,
+  onOpenStatement,
+  onAddChild,
+  onEdit,
+  onDelete,
+  openMenuId,
+  setOpenMenuId,
+  lang,
+  rolled,
+  balanceById,
+  childCount,
+}) {
+  const code = String(account.code)
+  const isGroup = account.isGroup || (childCount?.get(code) ?? 0) > 0
+  const bal = rolled.get(account.id)
+  const ownBal = balanceById.get(account.id)
+  const balanceValue = bal ? bal.balance : (ownBal?.balance ?? 0)
+  const normalBal = getNormalBalance(account)
+  const isOpenMenu = openMenuId === account.id
+
+  const handleClick = () => {
+    if (isGroup) {
+      onDrillDown(account)
     } else {
-      const existing = map.get(codeKey)
-      if (!existing.role && account.role) {
-        map.set(codeKey, account)
-      }
+      onOpenStatement(account)
     }
   }
 
-  const baseList = Array.from(map.values())
+  return (
+    <div
+      onClick={handleClick}
+      className="flex items-center justify-between py-4 px-4 sm:px-6 border-b border-slate-200/80 dark:border-slate-800 hover:bg-slate-50/80 dark:hover:bg-slate-800/40 transition group cursor-pointer select-none"
+    >
+      {/* Right Side (in RTL): Big Blue Folder Icon + Title & #Code */}
+      <div className="flex items-center gap-4 min-w-0 flex-1">
+        {isGroup ? (
+          <div className="w-10 h-10 sm:w-11 sm:h-11 shrink-0 grid place-items-center rounded-xl bg-sky-50 dark:bg-sky-950/60 text-sky-600 dark:text-sky-400 group-hover:scale-105 transition">
+            <DaftraFolderIcon />
+          </div>
+        ) : (
+          <div className="w-10 h-10 sm:w-11 sm:h-11 shrink-0 grid place-items-center rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 group-hover:scale-105 transition">
+            <DaftraDocIcon />
+          </div>
+        )}
 
-  // 1 — إضافة شجرة العملاء وتحتهم الموظفين المسؤولين
-  const recIdx = baseList.findIndex(
-    (a) => String(a.code) === '110201' || String(a.code) === '112' || String(a.code).startsWith('110201') || a.role === 'receivable',
+        <div className="min-w-0">
+          <div className="flex items-center gap-2">
+            <h4 className="text-base sm:text-lg font-bold text-slate-800 dark:text-white group-hover:text-sky-600 dark:group-hover:text-sky-400 transition truncate">
+              {accountLabel(account, lang)}
+            </h4>
+            {account.isClientNode && (
+              <span className="px-1.5 py-0.2 rounded bg-teal-50 text-teal-700 dark:bg-teal-950/60 dark:text-teal-300 text-[10px] font-bold border border-teal-200 dark:border-teal-800">
+                عميل
+              </span>
+            )}
+            {account.isVendorNode && (
+              <span className="px-1.5 py-0.2 rounded bg-amber-50 text-amber-700 dark:bg-amber-950/60 dark:text-amber-300 text-[10px] font-bold border border-amber-200 dark:border-amber-800">
+                مورد
+              </span>
+            )}
+            {account.id?.startsWith('emp-') && (
+              <span className="px-1.5 py-0.2 rounded bg-purple-50 text-purple-700 dark:bg-purple-950/60 dark:text-purple-300 text-[10px] font-bold border border-purple-200 dark:border-purple-800">
+                موظف
+              </span>
+            )}
+          </div>
+          <p className="text-xs font-mono font-medium text-slate-400 dark:text-slate-500 mt-0.5">
+            #{account.code}
+          </p>
+        </div>
+      </div>
+
+      {/* Middle: Big Balance + Nature (مدين/دائن) */}
+      <div className="text-center px-4 sm:px-8 shrink-0">
+        <div className="text-lg sm:text-xl font-bold font-mono text-slate-800 dark:text-slate-100 tabular-nums">
+          {formatMoney(balanceValue)}
+        </div>
+        <div className="text-xs font-medium text-slate-400 dark:text-slate-500 mt-0.5">
+          {normalBal === 'debit' ? 'مدين' : 'دائن'}
+        </div>
+      </div>
+
+      {/* Left Side: Square Action Button [▼] with Popup Menu */}
+      <div className="relative shrink-0" onClick={(e) => e.stopPropagation()}>
+        <button
+          type="button"
+          onClick={() => setOpenMenuId(isOpenMenu ? null : account.id)}
+          className="w-8 h-8 rounded-lg bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 grid place-items-center transition border border-slate-200/60 dark:border-slate-700 shadow-2xs"
+          title="خيارات الحساب"
+        >
+          <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M12 16l-6-6h12l-6 6z" />
+          </svg>
+        </button>
+
+        {isOpenMenu && (
+          <>
+            <div
+              className="fixed inset-0 z-40"
+              onClick={() => setOpenMenuId(null)}
+            />
+            <div className="absolute left-0 mt-1 w-48 rounded-xl bg-white dark:bg-slate-800 shadow-xl border border-slate-200 dark:border-slate-700 py-1.5 z-50 text-xs font-bold text-slate-700 dark:text-slate-200 animate-in fade-in zoom-in-95">
+              {isGroup && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setOpenMenuId(null)
+                    onAddChild(account)
+                  }}
+                  className="w-full text-start px-3.5 py-2 hover:bg-slate-50 dark:hover:bg-slate-700 flex items-center gap-2 text-emerald-600 dark:text-emerald-400"
+                >
+                  <IconPlus className="w-3.5 h-3.5" />
+                  <span>إضافة حساب فرعي</span>
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => {
+                  setOpenMenuId(null)
+                  onOpenStatement(account)
+                }}
+                className="w-full text-start px-3.5 py-2 hover:bg-slate-50 dark:hover:bg-slate-700 flex items-center gap-2"
+              >
+                <IconFileText className="w-3.5 h-3.5 text-slate-400" />
+                <span>عرض كشف الحساب</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setOpenMenuId(null)
+                  onEdit(account)
+                }}
+                className="w-full text-start px-3.5 py-2 hover:bg-slate-50 dark:hover:bg-slate-700 flex items-center gap-2"
+              >
+                <IconPencil className="w-3.5 h-3.5 text-slate-400" />
+                <span>تعديل الحساب</span>
+              </button>
+              {!account.role && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setOpenMenuId(null)
+                    onDelete(account)
+                  }}
+                  className="w-full text-start px-3.5 py-2 hover:bg-red-50 dark:hover:bg-red-950/50 flex items-center gap-2 text-red-600 dark:text-red-400 border-t border-slate-100 dark:border-slate-700 mt-1"
+                >
+                  <IconTrash className="w-3.5 h-3.5" />
+                  <span>حذف الحساب</span>
+                </button>
+              )}
+            </div>
+          </>
+        )}
+      </div>
+    </div>
   )
-  if (recIdx !== -1 && clients.length > 0) {
-    baseList[recIdx] = { ...baseList[recIdx], isGroup: true }
-    const recCode = String(baseList[recIdx].code)
-
-    const parentClients = clients.filter((c) => c.isParent || (!c.parentId && clients.some((sub) => sub.parentId === c.id)))
-    const standaloneClients = clients.filter((c) => !c.isParent && !c.parentId && !clients.some((sub) => sub.parentId === c.id))
-
-    let pIndex = 1
-    for (const pClient of parentClients) {
-      const pCode = `${recCode}${String(pIndex).padStart(2, '0')}`
-      pIndex += 1
-
-      const childBranches = clients.filter((c) => c.parentId === pClient.id)
-
-      baseList.push({
-        id: `client-${pClient.id}`,
-        code: pCode,
-        name: `${pClient.name} (عميل رئيسي)`,
-        nameEn: pClient.businessName || '',
-        type: 'asset',
-        isGroup: true,
-        parentCode: recCode,
-        clientId: pClient.id,
-        isClientNode: true,
-        isParentClient: true,
-      })
-
-      if (pClient.employeeId && empMap.get(pClient.employeeId)) {
-        baseList.push({
-          id: `client-emp-${pClient.id}-main`,
-          code: `${pCode}91`,
-          name: `👤 الموظف المسؤول: ${empMap.get(pClient.employeeId).name}`,
-          type: 'asset',
-          isGroup: false,
-          parentCode: pCode,
-          employeeId: pClient.employeeId,
-        })
-      }
-      if (pClient.secondEmployeeId && empMap.get(pClient.secondEmployeeId)) {
-        baseList.push({
-          id: `client-emp-${pClient.id}-sec`,
-          code: `${pCode}92`,
-          name: `👤 الموظف المساعد: ${empMap.get(pClient.secondEmployeeId).name}`,
-          type: 'asset',
-          isGroup: false,
-          parentCode: pCode,
-          employeeId: pClient.secondEmployeeId,
-        })
-      }
-
-      let bIndex = 1
-      for (const bClient of childBranches) {
-        const bCode = `${pCode}${String(bIndex).padStart(2, '0')}`
-        bIndex += 1
-        const bHasEmp = Boolean(bClient.employeeId || bClient.secondEmployeeId)
-
-        baseList.push({
-          id: `client-${bClient.id}`,
-          code: bCode,
-          name: `${bClient.name} (فرع)`,
-          nameEn: bClient.businessName || '',
-          type: 'asset',
-          isGroup: bHasEmp,
-          parentCode: pCode,
-          clientId: bClient.id,
-          isClientNode: true,
-          isChildClient: true,
-        })
-
-        if (bClient.employeeId && empMap.get(bClient.employeeId)) {
-          baseList.push({
-            id: `client-emp-${bClient.id}-main`,
-            code: `${bCode}01`,
-            name: `👤 الموظف المسؤول: ${empMap.get(bClient.employeeId).name}`,
-            type: 'asset',
-            isGroup: false,
-            parentCode: bCode,
-            employeeId: bClient.employeeId,
-          })
-        }
-        if (bClient.secondEmployeeId && empMap.get(bClient.secondEmployeeId)) {
-          baseList.push({
-            id: `client-emp-${bClient.id}-sec`,
-            code: `${bCode}02`,
-            name: `👤 الموظف المساعد: ${empMap.get(bClient.secondEmployeeId).name}`,
-            type: 'asset',
-            isGroup: false,
-            parentCode: bCode,
-            employeeId: bClient.secondEmployeeId,
-          })
-        }
-      }
-    }
-
-    for (const sClient of standaloneClients) {
-      const sCode = `${recCode}${String(pIndex).padStart(2, '0')}`
-      pIndex += 1
-      const sHasEmp = Boolean(sClient.employeeId || sClient.secondEmployeeId)
-
-      baseList.push({
-        id: `client-${sClient.id}`,
-        code: sCode,
-        name: sClient.name,
-        nameEn: sClient.businessName || '',
-        type: 'asset',
-        isGroup: sHasEmp,
-        parentCode: recCode,
-        clientId: sClient.id,
-        isClientNode: true,
-      })
-
-      if (sClient.employeeId && empMap.get(sClient.employeeId)) {
-        baseList.push({
-          id: `client-emp-${sClient.id}-main`,
-          code: `${sCode}01`,
-          name: `👤 الموظف المسؤول: ${empMap.get(sClient.employeeId).name}`,
-          type: 'asset',
-          isGroup: false,
-          parentCode: sCode,
-          employeeId: sClient.employeeId,
-        })
-      }
-      if (sClient.secondEmployeeId && empMap.get(sClient.secondEmployeeId)) {
-        baseList.push({
-          id: `client-emp-${sClient.id}-sec`,
-          code: `${sCode}02`,
-          name: `👤 الموظف المساعد: ${empMap.get(sClient.secondEmployeeId).name}`,
-          type: 'asset',
-          isGroup: false,
-          parentCode: sCode,
-          employeeId: sClient.secondEmployeeId,
-        })
-      }
-    }
-  }
-
-  // 2 — إضافة حسابات الموظفين تفصيليًا تحت مستحقات الموظفين (دائنون 210201)
-  const empPayIdx = baseList.findIndex((a) => String(a.code) === '210201' || a.role === 'employeePayable')
-  if (empPayIdx !== -1 && employees.length > 0) {
-    baseList[empPayIdx] = { ...baseList[empPayIdx], isGroup: true }
-    const empPayCode = String(baseList[empPayIdx].code)
-    let eIndex = 1
-    for (const emp of employees) {
-      const eCode = `${empPayCode}${String(eIndex).padStart(2, '0')}`
-      eIndex += 1
-      baseList.push({
-        id: `emp-payable-${emp.id}`,
-        code: eCode,
-        name: `👤 ${emp.name} (مستحقات موظف)`,
-        type: 'liability',
-        isGroup: false,
-        parentCode: empPayCode,
-        employeeId: emp.id,
-      })
-    }
-  }
-
-  // 3 — إضافة حسابات الموظفين تفصيليًا تحت عهد وسلف الموظفين (أصول 110203)
-  const empAdvIdx = baseList.findIndex((a) => String(a.code) === '110203')
-  if (empAdvIdx !== -1 && employees.length > 0) {
-    baseList[empAdvIdx] = { ...baseList[empAdvIdx], isGroup: true }
-    const empAdvCode = String(baseList[empAdvIdx].code)
-    let eIndex = 1
-    for (const emp of employees) {
-      const eCode = `${empAdvCode}${String(eIndex).padStart(2, '0')}`
-      eIndex += 1
-      baseList.push({
-        id: `emp-advance-${emp.id}`,
-        code: eCode,
-        name: `👤 ${emp.name} (عهدة/سلفة)`,
-        type: 'asset',
-        isGroup: false,
-        parentCode: empAdvCode,
-        employeeId: emp.id,
-      })
-    }
-  }
-
-  // 4 — إضافة حسابات الموردين تفصيليًا تحت الموردين (دائنون 211 أو 2101)
-  let vendorIdx = baseList.findIndex(
-    (a) =>
-      String(a.code) === '211' ||
-      String(a.code) === '2101' ||
-      String(a.code) === '210101' ||
-      String(a.code) === '21101' ||
-      String(a.code).startsWith('211') ||
-      String(a.code).startsWith('2101') ||
-      (a.name || '').includes('الموردون') ||
-      (a.name || '').includes('الموردين') ||
-      a.role === 'vendorPayable',
-  )
-  if (vendors.length > 0) {
-    if (vendorIdx === -1) {
-      const autoVendorGroup = {
-        id: 'group-vendor-211-auto',
-        code: '211',
-        name: 'الموردون والدائنون التجاريون',
-        type: 'liability',
-        isGroup: true,
-        parentCode: '21',
-        role: 'vendorPayable',
-      }
-      baseList.push(autoVendorGroup)
-      vendorIdx = baseList.length - 1
-    } else {
-      baseList[vendorIdx] = { ...baseList[vendorIdx], isGroup: true }
-    }
-
-    const vendorCode = String(baseList[vendorIdx].code)
-    let vIndex = 1
-    for (const vendor of vendors) {
-      const vCode = `${vendorCode}${String(vIndex).padStart(2, '0')}`
-      vIndex += 1
-      baseList.push({
-        id: `vendor-${vendor.id}`,
-        code: vCode,
-        name: vendor.name,
-        type: 'liability',
-        isGroup: false,
-        parentCode: vendorCode,
-        vendorId: vendor.id,
-        subLedgerType: 'vendor',
-        subLedgerId: vendor.id,
-        isVendorNode: true,
-      })
-    }
-  }
-
-  return baseList
 }
 
-function AccountTree({ accounts, cleanAccounts: cleanAccountsProp, clients = [], employees = [], vendors = [], balances = [], journal = [], settings = {}, lang, locale }) {
+export { buildCleanAccounts } from '../lib/accounts'
+
+function AccountTree({ accounts, cleanAccounts: cleanAccountsProp, clients = [], employees = [], vendors = [], balances = [], journal = [], settings = {}, invoices = [], lang, locale }) {
   const { t } = useI18n()
 
   /* استبعاد الحسابات المكررة وبناء شجرة العملاء والموظفين تراكيباً دقيقاً */
@@ -1061,6 +1049,10 @@ function AccountTree({ accounts, cleanAccounts: cleanAccountsProp, clients = [],
   const [removing, setRemoving] = useState(null)
   const [busy, setBusy] = useState(false)
   const [q, setQ] = useState('')
+  const [currentParentCode, setCurrentParentCode] = useState(null)
+  const [openActionMenuId, setOpenActionMenuId] = useState(null)
+  const [treeSearch, setTreeSearch] = useState('')
+  const [viewMode, setViewMode] = useState('daftra') // 'daftra' | 'table'
   const [page, setPage] = useState(1)
 
   const collapseSubtree = (setObj, code) => {
@@ -1084,35 +1076,10 @@ function AccountTree({ accounts, cleanAccounts: cleanAccountsProp, clients = [],
       if (next.has(codeStr)) {
         collapseSubtree(next, codeStr)
       } else {
-        // Accordion mode: Collapse sibling nodes sharing the same parentCode
-        const targetAcc = cleanAccounts.find((a) => String(a.code) === codeStr)
-        if (targetAcc) {
-          const parentCode = targetAcc.parentCode ? String(targetAcc.parentCode) : null
-          for (const acc of cleanAccounts) {
-            const accCode = String(acc.code)
-            const accParent = acc.parentCode ? String(acc.parentCode) : null
-            if (accCode !== codeStr && accParent === parentCode) {
-              collapseSubtree(next, accCode)
-            }
-          }
-        }
         next.add(codeStr)
       }
       return next
     })
-  }
-
-  function isVisible(account) {
-    let parent = account.parentCode
-    const visited = new Set([String(account.code)])
-    while (parent) {
-      const parentStr = String(parent)
-      if (visited.has(parentStr)) return false
-      visited.add(parentStr)
-      if (!expanded.has(parentStr)) return false
-      parent = byCode.get(parentStr)?.parentCode ?? null
-    }
-    return true
   }
 
   async function save(values) {
@@ -1141,68 +1108,66 @@ function AccountTree({ accounts, cleanAccounts: cleanAccountsProp, clients = [],
   }
 
   const term = q.trim().toLowerCase()
+  const treeTerm = treeSearch.trim().toLowerCase()
 
-  const visible = useMemo(() => {
-    let list = term
-      ? nodes.filter((account) => {
-          const matchSelf =
-            String(account.code).includes(term) ||
-            accountLabel(account, lang).toLowerCase().includes(term) ||
-            (account.nameEn ?? '').toLowerCase().includes(term)
-          if (matchSelf) return true
-          if (account.parentCode) {
-            const parentAcc = byCode.get(String(account.parentCode))
-            if (parentAcc) {
-              return (
-                String(parentAcc.code).includes(term) ||
-                accountLabel(parentAcc, lang).toLowerCase().includes(term) ||
-                (parentAcc.nameEn ?? '').toLowerCase().includes(term)
-              )
-            }
-          }
-          return false
-        })
-      : nodes.filter(isVisible)
-    if (selected && !term) {
-      const selCode = String(selected.code)
-      list = list.filter((a) => String(a.code) === selCode || String(a.parentCode) === selCode || a.id === selected.id)
+  const filteredTreeNodes = useMemo(() => {
+    if (!treeTerm) return treeNodes
+    const filterRec = (list) => {
+      const res = []
+      for (const node of list) {
+        const matchSelf =
+          String(node.code).includes(treeTerm) ||
+          accountLabel(node, lang).toLowerCase().includes(treeTerm) ||
+          (node.nameEn ?? '').toLowerCase().includes(treeTerm)
+        const sub = node.children ? filterRec(node.children) : []
+        if (matchSelf || sub.length > 0) {
+          res.push({ ...node, children: sub.length > 0 ? sub : node.children })
+        }
+      }
+      return res
     }
-    return list
-  }, [term, nodes, isVisible, selected, lang, byCode])
+    return filterRec(treeNodes)
+  }, [treeNodes, treeTerm, lang])
 
-  const pageSize = 15
-  const totalPages = Math.max(1, Math.ceil(visible.length / pageSize))
-  const currentPage = Math.min(page, totalPages)
-  const pagedItems = useMemo(
-    () => visible.slice((currentPage - 1) * pageSize, currentPage * pageSize),
-    [visible, currentPage, pageSize],
-  )
+  const breadcrumbs = useMemo(() => {
+    const list = [{ code: null, name: 'دليل الحسابات' }]
+    if (!currentParentCode) return list
+    const chain = []
+    let curr = byCode.get(String(currentParentCode))
+    const visited = new Set()
+    while (curr) {
+      const c = String(curr.code)
+      if (visited.has(c)) break
+      visited.add(c)
+      chain.unshift({ code: c, name: accountLabel(curr, lang) })
+      curr = curr.parentCode ? byCode.get(String(curr.parentCode)) : null
+    }
+    return [...list, ...chain]
+  }, [currentParentCode, byCode, lang])
 
-  function getLevelBadge(account) {
-    if (account.depth === 0) {
-      return (
-        <span className="inline-flex items-center rounded-md border border-sky-200 bg-sky-50 px-2 py-0.5 text-xs font-extrabold text-sky-700">
-          رئيسي
-        </span>
+  const daftraItems = useMemo(() => {
+    if (term) {
+      return nodes.filter(
+        (a) =>
+          String(a.code).includes(term) ||
+          accountLabel(a, lang).toLowerCase().includes(term) ||
+          (a.nameEn ?? '').toLowerCase().includes(term),
       )
     }
-    if (account.isGroup) {
-      return (
-        <span className="inline-flex items-center rounded-md border border-purple-200 bg-purple-50 px-2 py-0.5 text-xs font-bold text-purple-700">
-          مجموعة
-        </span>
-      )
+    if (!currentParentCode) {
+      return cleanAccounts
+        .filter((a) => !a.parentCode || String(a.code).length === 1 || a.level === 1)
+        .sort((a, b) => String(a.code).localeCompare(String(b.code), undefined, { numeric: true }))
     }
-    return (
-      <span className="inline-flex items-center rounded-md border border-slate-200 bg-slate-100 px-2 py-0.5 text-xs font-semibold text-slate-600">
-        حساب
-      </span>
-    )
-  }
+    return cleanAccounts
+      .filter((a) => String(a.parentCode) === String(currentParentCode))
+      .sort((a, b) => String(a.code).localeCompare(String(b.code), undefined, { numeric: true }))
+  }, [term, currentParentCode, cleanAccounts, nodes, lang])
 
   const rootBalances = useMemo(() => {
     const getBal = (code) => {
-      const acc = cleanAccounts.find((a) => String(a.code) === code)
+      const acc = cleanAccounts.find((a) => String(a.code) === String(code) && (!a.parentCode || a.parentCode === null)) ||
+        cleanAccounts.find((a) => String(a.code) === String(code))
       if (!acc) return 0
       return rolled.get(acc.id)?.balance || 0
     }
@@ -1210,376 +1175,549 @@ function AccountTree({ accounts, cleanAccounts: cleanAccountsProp, clients = [],
       assets: getBal('1'),
       liabilities: getBal('2'),
       equity: getBal('3'),
-      revenue: getBal('4'),
-      expenses: getBal('5'),
+      revenue: getBal('4') + getBal('7'),
+      expenses: getBal('5') + getBal('6') + getBal('8'),
     }
   }, [cleanAccounts, rolled])
 
+  const trialBalanceEq = useMemo(() => {
+    const assets = rootBalances.assets
+    const liabilities = rootBalances.liabilities
+    const equity = rootBalances.equity
+    const revenue = rootBalances.revenue
+    const expenses = rootBalances.expenses
+
+    const debitSide = round2(assets + expenses)
+    const creditSide = round2(liabilities + equity + revenue)
+    const diff = round2(Math.abs(debitSide - creditSide))
+    const isBalanced = diff < 0.05
+
+    return {
+      assets,
+      liabilities,
+      equity,
+      revenue,
+      expenses,
+      debitSide,
+      creditSide,
+      diff,
+      isBalanced,
+    }
+  }, [rootBalances])
+
+  // Pagination for full table mode
+  const pageSize = 15
+  const tableItems = useMemo(() => {
+    if (term) {
+      return nodes.filter(
+        (a) =>
+          String(a.code).includes(term) ||
+          accountLabel(a, lang).toLowerCase().includes(term) ||
+          (a.nameEn ?? '').toLowerCase().includes(term),
+      )
+    }
+    return nodes
+  }, [nodes, term, lang])
+
+  const totalPages = Math.max(1, Math.ceil(tableItems.length / pageSize))
+  const currentPage = Math.min(page, totalPages)
+  const pagedItems = useMemo(
+    () => tableItems.slice((currentPage - 1) * pageSize, currentPage * pageSize),
+    [tableItems, currentPage, pageSize],
+  )
+
+  function getLevelBadge(account) {
+    if (account.isClientNode) {
+      return (
+        <span className="inline-flex items-center rounded-md border border-teal-300 bg-teal-50 dark:bg-teal-950/40 dark:border-teal-800 px-2 py-0.5 text-xs font-black text-teal-700 dark:text-teal-300 shadow-2xs">
+          عميل
+        </span>
+      )
+    }
+    if (account.isVendorNode) {
+      return (
+        <span className="inline-flex items-center rounded-md border border-amber-300 bg-amber-50 dark:bg-amber-950/40 dark:border-amber-800 px-2 py-0.5 text-xs font-black text-amber-700 dark:text-amber-300 shadow-2xs">
+          مورد
+        </span>
+      )
+    }
+    if (account.id?.startsWith('emp-payable-')) {
+      return (
+        <span className="inline-flex items-center rounded-md border border-rose-300 bg-rose-50 dark:bg-rose-950/40 dark:border-rose-800 px-2 py-0.5 text-xs font-black text-rose-700 dark:text-rose-300 shadow-2xs">
+          مستحقات موظف
+        </span>
+      )
+    }
+    if (account.id?.startsWith('emp-advance-')) {
+      return (
+        <span className="inline-flex items-center rounded-md border border-sky-300 bg-sky-50 dark:bg-sky-950/40 dark:border-sky-800 px-2 py-0.5 text-xs font-black text-sky-700 dark:text-sky-300 shadow-2xs">
+          سلفة موظف
+        </span>
+      )
+    }
+
+    const lvl = account.level || (account.depth !== undefined ? account.depth + 1 : (account.code ? String(account.code).split('-').length : 1))
+    switch (lvl) {
+      case 1:
+        return (
+          <span className="inline-flex items-center rounded-md border border-sky-300 bg-sky-50 dark:bg-sky-950/50 dark:border-sky-800 px-2 py-0.5 text-xs font-black text-sky-700 dark:text-sky-300 shadow-2xs">
+            م1 رئيسي
+          </span>
+        )
+      case 2:
+        return (
+          <span className="inline-flex items-center rounded-md border border-indigo-300 bg-indigo-50 dark:bg-indigo-950/50 dark:border-indigo-800 px-2 py-0.5 text-xs font-bold text-indigo-700 dark:text-indigo-300 shadow-2xs">
+            م2 مجموعة
+          </span>
+        )
+      case 3:
+        return (
+          <span className="inline-flex items-center rounded-md border border-purple-300 bg-purple-50 dark:bg-purple-950/50 dark:border-purple-800 px-2 py-0.5 text-xs font-bold text-purple-700 dark:text-purple-300 shadow-2xs">
+            م3 عام
+          </span>
+        )
+      case 4:
+        return (
+          <span className="inline-flex items-center rounded-md border border-amber-300 bg-amber-50 dark:bg-amber-950/50 dark:border-amber-800 px-2 py-0.5 text-xs font-semibold text-amber-700 dark:text-amber-300 shadow-2xs">
+            م4 فرعي
+          </span>
+        )
+      case 5:
+        return (
+          <span className="inline-flex items-center rounded-md border border-teal-300 bg-teal-50 dark:bg-teal-950/50 dark:border-teal-800 px-2 py-0.5 text-xs font-semibold text-teal-700 dark:text-teal-300 shadow-2xs">
+            م5 تفصيلي
+          </span>
+        )
+      case 6:
+      default:
+        return (
+          <span className="inline-flex items-center rounded-md border border-emerald-300 bg-emerald-50 dark:bg-emerald-950/50 dark:border-emerald-800 px-2 py-0.5 text-xs font-bold text-emerald-700 dark:text-emerald-300 shadow-2xs">
+            م6 تحليلي
+          </span>
+        )
+    }
+  }
+
   return (
     <div className="space-y-4">
-      {/* البطاقات الخمس للمؤشرات المحاسبية */}
-      <div className="card p-5">
+      {/* Top Header Controls Bar */}
+      <div className="card p-4 flex flex-wrap items-center justify-between gap-4 border border-slate-200/90 dark:border-slate-800 shadow-xs bg-white dark:bg-slate-900">
+        <div className="flex items-center gap-3">
+          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-sky-50 dark:bg-sky-950/60 text-sky-600 dark:text-sky-400 shadow-xs">
+            <IconFolder className="h-5 w-5 shrink-0" />
+          </div>
+          <div>
+            <h2 className="text-base font-black text-slate-900 dark:text-white">دليل الحسابات</h2>
+            <div className="flex items-center gap-2 mt-0.5 text-xs text-slate-400 font-semibold">
+              <span>إجمالي الحسابات: {cleanAccounts.length}</span>
+              <span>•</span>
+              <span className={trialBalanceEq.isBalanced ? 'text-emerald-600 font-bold' : 'text-amber-600 font-bold'}>
+                {trialBalanceEq.isBalanced ? '✓ ميزان المراجعة متزن' : '⚠️ بحاجة لتسوية'}
+              </span>
+            </div>
+          </div>
+        </div>
 
-        {/* بطاقات المؤشرات المحاسبية الخمسة (KPI Cards) */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3.5 pt-1">
-          {/* أصول */}
-          <div className="rounded-2xl border-2 border-sky-400 bg-white p-4 shadow-xs transition hover:shadow-md flex flex-col justify-between">
-            <span className="text-xs font-extrabold text-slate-500">أصول</span>
-            <span className="text-lg font-black text-slate-900 num mt-2">
-              {formatMoney(rootBalances.assets)} <span className="text-xs font-bold text-slate-400">ج.م</span>
-            </span>
+        <div className="flex flex-wrap items-center gap-2.5">
+          <div className="min-w-[220px]">
+            <SearchInput
+              value={q}
+              onChange={(val) => {
+                setQ(val)
+                setPage(1)
+              }}
+              placeholder="ابحث بالاسم أو الكود..."
+            />
           </div>
 
-          {/* خصوم */}
-          <div className="rounded-2xl border-2 border-amber-400 bg-white p-4 shadow-xs transition hover:shadow-md flex flex-col justify-between">
-            <span className="text-xs font-extrabold text-slate-500">خصوم</span>
-            <span className="text-lg font-black text-slate-900 num mt-2">
-              {formatMoney(rootBalances.liabilities)} <span className="text-xs font-bold text-slate-400">ج.م</span>
-            </span>
+          {/* View Toggle */}
+          <div className="flex items-center gap-1 bg-slate-100 dark:bg-slate-800 p-1 rounded-xl border border-slate-200/80 dark:border-slate-700 text-xs font-bold">
+            <button
+              type="button"
+              onClick={() => setViewMode('daftra')}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg transition ${
+                viewMode === 'daftra'
+                  ? 'bg-white dark:bg-slate-700 text-sky-600 dark:text-white shadow-xs font-extrabold'
+                  : 'text-slate-600 dark:text-slate-300 hover:text-slate-900'
+              }`}
+            >
+              <IconGrid className="h-4 w-4" />
+              <span>بطاقات دفترة</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setViewMode('table')}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg transition ${
+                viewMode === 'table'
+                  ? 'bg-white dark:bg-slate-700 text-sky-600 dark:text-white shadow-xs font-extrabold'
+                  : 'text-slate-600 dark:text-slate-300 hover:text-slate-900'
+              }`}
+            >
+              <IconList className="h-4 w-4" />
+              <span>الجدول التفصيلي</span>
+            </button>
           </div>
 
-          {/* حقوق ملكية */}
-          <div className="rounded-2xl border-2 border-purple-400 bg-white p-4 shadow-xs transition hover:shadow-md flex flex-col justify-between">
-            <span className="text-xs font-extrabold text-slate-500">حقوق ملكية</span>
-            <span className="text-lg font-black text-slate-900 num mt-2">
-              {formatMoney(rootBalances.equity)} <span className="text-xs font-bold text-slate-400">ج.م</span>
-            </span>
-          </div>
+          <Button variant="ghost" onClick={() => exportTreeCSV(cleanAccounts, rolled, t, lang)}>
+            <IconExport className="h-4 w-4 me-1.5 shrink-0 inline" /> تصدير CSV
+          </Button>
 
-          {/* إيرادات */}
-          <div className="rounded-2xl border-2 border-emerald-400 bg-white p-4 shadow-xs transition hover:shadow-md flex flex-col justify-between">
-            <span className="text-xs font-extrabold text-slate-500">إيرادات</span>
-            <span className="text-lg font-black text-slate-900 num mt-2">
-              {formatMoney(rootBalances.revenue)} <span className="text-xs font-bold text-slate-400">ج.م</span>
-            </span>
-          </div>
+          <Button variant="ghost" onClick={() => setShowImportModal(true)}>
+            <IconImport className="h-4 w-4 me-1.5 shrink-0 inline" /> استيراد
+          </Button>
 
-          {/* مصروفات */}
-          <div className="rounded-2xl border-2 border-rose-400 bg-white p-4 shadow-xs transition hover:shadow-md flex flex-col justify-between">
-            <span className="text-xs font-extrabold text-slate-500">مصروفات</span>
-            <span className="text-lg font-black text-slate-900 num mt-2">
-              {formatMoney(rootBalances.expenses)} <span className="text-xs font-bold text-slate-400">ج.م</span>
-            </span>
-          </div>
+          <Button onClick={() => setEditing({ presetParentCode: currentParentCode || undefined })}>
+            <IconPlus className="h-4 w-4 me-1 shrink-0 inline" /> + أضف حساب
+          </Button>
         </div>
       </div>
 
-      {/* شريط البحث والأدوات الحالية */}
-      <div className="card p-4">
-        <div className="flex flex-wrap items-center justify-between gap-4">
-          <div className="flex items-center gap-3">
-            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-brand-50 text-brand-600 shadow-xs">
-              <IconFolder className="h-5 w-5 shrink-0" />
-            </div>
-            <div>
-              <h2 className="text-sm font-extrabold text-slate-900">دليل الحسابات التفصيلي</h2>
-              <p className="text-xs font-semibold text-slate-400">إدارة وتصنيف شجرة دليل الحسابات المحاسبية</p>
-            </div>
-          </div>
-
-          <div className="flex flex-wrap items-center gap-2.5">
-            <div className="min-w-[240px]">
-              <SearchInput value={q} onChange={(val) => { setQ(val); setPage(1); }} placeholder="ابحث بالاسم أو الكود..." />
-            </div>
-
-            <Button variant="ghost" onClick={() => exportTreeCSV(cleanAccounts, rolled, t, lang)}>
-              <IconExport className="h-4 w-4 me-1.5 shrink-0 inline" /> تصدير
-            </Button>
-            <Button variant="ghost" onClick={() => setShowImportModal(true)}>
-              <IconImport className="h-4 w-4 me-1.5 shrink-0 inline" /> استيراد / استرداد
-            </Button>
-            <Button onClick={() => setEditing({})}>
-              + حساب جديد
-            </Button>
-          </div>
-        </div>
-      </div>
-
-      {/* التخطيط المقسم: شجرة الحسابات الجانبية + جدول الحسابات */}
-      <div className="grid grid-cols-1 xl:grid-cols-4 gap-5 items-start">
-        {/* اللوحة الجانبية: شجرة الحسابات التفاعلية */}
-        <div className="card p-4 space-y-3 xl:col-span-1">
-          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-3">
-            <div className="flex items-center gap-2">
-              <IconFolderOpen className="h-4 w-4 text-brand-600 shrink-0" />
-              <h3 className="text-sm font-extrabold text-slate-900">شجرة الحسابات</h3>
-            </div>
-            <div className="flex items-center gap-2">
-              <select
-                value=""
-                onChange={(e) => {
-                  const code = e.target.value
-                  if (code) openCategory(code)
-                }}
-                className="h-8 max-w-[150px] rounded-xl border border-slate-200 bg-white px-2 py-1 text-[11px] font-bold text-slate-700 shadow-xs focus:border-brand-500 focus:outline-none transition cursor-pointer truncate"
-              >
-                <option value="">📂 فتح قسم...</option>
-                {groupCategoryOptions.map((opt) => (
-                  <option key={opt.code} value={opt.code}>
-                    {opt.name}
-                  </option>
-                ))}
-              </select>
-
-              <button
-                type="button"
-                title={expanded.size > 0 ? 'إغلاق كل الأقسام' : 'فتح وتوسيع كافة الأقسام'}
-                onClick={() => {
-                  if (expanded.size > 0) {
-                    setExpanded(new Set())
-                  } else {
-                    setExpanded(new Set(cleanAccounts.filter((a) => a.isGroup || (childCount.get(String(a.code)) ?? 0) > 0).map((a) => String(a.code))))
-                  }
-                }}
-                className={`grid h-8 w-8 place-items-center rounded-xl border text-xs transition shadow-xs cursor-pointer shrink-0 ${
-                  expanded.size > 0
-                    ? 'bg-rose-50 border-rose-200/80 text-rose-600 hover:bg-rose-100'
-                    : 'bg-emerald-50 border-emerald-200/80 text-emerald-700 hover:bg-emerald-100'
-                }`}
-              >
-                <svg
-                  className={`h-4 w-4 transition-transform duration-300 ${expanded.size > 0 ? 'rotate-180' : ''}`}
-                  fill="none"
-                  stroke="currentColor"
-                  viewBox="0 0 24 24"
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth="2.5"
-                    d="M7 16V4m0 0L3 8m4-4l4 4m6 0v12m0 0l4-4m-4 4l-4-4"
+      {/* Main View: Daftra Split Card (Tree on Right, Cards on Left) */}
+      {viewMode === 'daftra' ? (
+        <div className="card overflow-hidden border border-slate-200/90 dark:border-slate-800 shadow-xs bg-white dark:bg-slate-900">
+          <div className="flex flex-col lg:flex-row items-stretch">
+            {/* Right Column (in RTL): The Tree Explorer Pane */}
+            <div className="w-full lg:w-80 xl:w-96 border-b lg:border-b-0 lg:border-e border-slate-200/90 dark:border-slate-800 bg-slate-50/40 dark:bg-slate-900/40 p-4 shrink-0 flex flex-col">
+              {/* Search in tree */}
+              <div className="mb-3">
+                <div className="relative">
+                  <input
+                    type="text"
+                    value={treeSearch}
+                    onChange={(e) => setTreeSearch(e.target.value)}
+                    placeholder="بحث في الشجرة..."
+                    className="w-full h-8.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-8 text-xs font-semibold text-slate-800 dark:text-slate-200 placeholder:text-slate-400 focus:border-sky-500 focus:outline-none transition"
                   />
-                </svg>
-              </button>
+                  <div className="absolute right-2.5 top-2 text-slate-400">
+                    <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      <circle cx="11" cy="11" r="8" />
+                      <line x1="21" y1="21" x2="16.65" y2="16.65" />
+                    </svg>
+                  </div>
+                  {treeSearch && (
+                    <button
+                      type="button"
+                      onClick={() => setTreeSearch('')}
+                      className="absolute left-2.5 top-2 text-slate-400 hover:text-slate-600 text-xs font-bold"
+                    >
+                      ✕
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {/* Tree Nodes List */}
+              <div className="max-h-[680px] overflow-y-auto space-y-0.5 scrollbar-thin flex-1 pe-1">
+                {filteredTreeNodes.map((node) => (
+                  <DaftraTreeItem
+                    key={node.id}
+                    node={node}
+                    expanded={expanded}
+                    toggle={toggle}
+                    currentParentCode={currentParentCode}
+                    onNavigate={(acc) => {
+                      if (acc.isGroup || (childCount.get(String(acc.code)) ?? 0) > 0) {
+                        setCurrentParentCode(String(acc.code))
+                        setExpanded((prev) => new Set([...prev, String(acc.code)]))
+                      } else {
+                        setStatementAccount(acc)
+                      }
+                    }}
+                    lang={lang}
+                    rolled={rolled}
+                    childCount={childCount}
+                    level={1}
+                  />
+                ))}
+              </div>
+            </div>
+
+            {/* Left Column (in RTL): The Accounts Cards List (Main Pane) */}
+            <div className="flex-1 p-5 sm:p-7 flex flex-col justify-between min-w-0">
+              <div>
+                {/* Breadcrumbs Header */}
+                <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200/80 dark:border-slate-800 pb-4 mb-2">
+                  <div className="flex items-center gap-2 text-sm text-slate-500 dark:text-slate-400 font-semibold flex-wrap">
+                    {breadcrumbs.map((crumb, idx) => {
+                      const isLast = idx === breadcrumbs.length - 1
+                      return (
+                        <div key={idx} className="flex items-center gap-2">
+                          {idx > 0 && <span className="text-slate-300 dark:text-slate-600 font-bold">›</span>}
+                          <button
+                            type="button"
+                            disabled={isLast}
+                            onClick={() => setCurrentParentCode(crumb.code)}
+                            className={`transition ${
+                              isLast
+                                ? 'text-slate-900 dark:text-white font-bold cursor-default'
+                                : 'text-sky-600 dark:text-sky-400 hover:underline cursor-pointer'
+                            }`}
+                          >
+                            {crumb.name}
+                          </button>
+                        </div>
+                      )
+                    })}
+                  </div>
+
+                  {currentParentCode && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const parent = byCode.get(String(currentParentCode))
+                        setCurrentParentCode(parent?.parentCode ? String(parent.parentCode) : null)
+                      }}
+                      className="text-xs font-bold text-sky-600 hover:text-sky-700 dark:text-sky-400 flex items-center gap-1 transition"
+                    >
+                      <span>‹ الرجوع للمستوى السابق</span>
+                    </button>
+                  )}
+                </div>
+
+                {/* Account Rows List */}
+                {daftraItems.length === 0 ? (
+                  <div className="text-center py-16 px-4 space-y-3">
+                    <div className="w-12 h-12 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-400 grid place-items-center mx-auto">
+                      <IconFolder className="w-6 h-6" />
+                    </div>
+                    <p className="text-sm font-semibold text-slate-500 dark:text-slate-400">
+                      {q ? 'لا توجد نتائج مطابقة لبحثك' : 'لا توجد حسابات فرعية مسجلة بداخل هذا الحساب'}
+                    </p>
+                    <Button
+                      size="sm"
+                      onClick={() => setEditing({ presetParentCode: currentParentCode || undefined })}
+                      className="text-xs font-bold"
+                    >
+                      + أضف حساب فرعي الآن
+                    </Button>
+                  </div>
+                ) : (
+                  <div className="divide-y divide-slate-100 dark:divide-slate-800">
+                    {daftraItems.map((account) => (
+                      <DaftraAccountRow
+                        key={account.id}
+                        account={account}
+                        onDrillDown={(acc) => {
+                          setCurrentParentCode(String(acc.code))
+                          setExpanded((prev) => new Set([...prev, String(acc.code)]))
+                        }}
+                        onOpenStatement={(acc) => setStatementAccount(acc)}
+                        onAddChild={(acc) => setEditing({ presetParentCode: acc.code })}
+                        onEdit={(acc) => setEditing(acc)}
+                        onDelete={(acc) => setRemoving(acc)}
+                        openMenuId={openActionMenuId}
+                        setOpenMenuId={setOpenActionMenuId}
+                        lang={lang}
+                        rolled={rolled}
+                        balanceById={balanceById}
+                        childCount={childCount}
+                      />
+                    ))}
+                  </div>
+                )}
+
+                {/* Bottom "+ أضف حساب" Button */}
+                <div className="pt-5 px-4 sm:px-6">
+                  <button
+                    type="button"
+                    onClick={() => setEditing({ presetParentCode: currentParentCode || undefined })}
+                    className="inline-flex items-center gap-2 text-sm font-bold text-sky-600 hover:text-sky-700 dark:text-sky-400 transition"
+                  >
+                    <div className="w-5 h-5 rounded bg-sky-100 dark:bg-sky-950/80 text-sky-600 dark:text-sky-400 grid place-items-center text-xs font-black">
+                      +
+                    </div>
+                    <span>أضف حساب</span>
+                  </button>
+                </div>
+              </div>
             </div>
           </div>
+        </div>
+      ) : (
+        /* Full Data Table Mode */
+        <div className="card overflow-hidden border border-slate-200/90 dark:border-slate-800 shadow-xs">
+          <TableWrap>
+            <thead>
+              <tr>
+                <Th className="w-28">الكود</Th>
+                <Th>اسم الحساب</Th>
+                <Th className="w-20">الطبيعة</Th>
+                <Th className="w-20">نوع القيد</Th>
+                <Th className="text-end w-32">مدين</Th>
+                <Th className="text-end w-32">دائن</Th>
+                <Th className="text-end w-36">الرصيد</Th>
+                <Th className="w-24 text-center">الإجراءات</Th>
+              </tr>
+            </thead>
+            <tbody>
+              {pagedItems.map((account) => {
+                const bal = rolled.get(account.id)
+                const ownBal = balanceById.get(account.id)
+                const balanceValue = bal ? bal.balance : 0
+                const debitValue = bal ? bal.debit : (ownBal?.debit ?? 0)
+                const creditValue = bal ? bal.credit : (ownBal?.credit ?? 0)
+                const normalBal = getNormalBalance(account)
 
-          {selected && (
-            <div className="flex items-center justify-between rounded-xl bg-brand-50 px-3 py-2 text-xs font-bold text-brand-700 border border-brand-200/60">
-              <div className="flex items-center gap-1.5 truncate">
-                <span>تصفية بحساب:</span>
-                <span className="truncate text-brand-900">{selected.code} - {accountLabel(selected, lang)}</span>
-              </div>
+                return (
+                  <tr
+                    key={account.id}
+                    className={`transition group/row ${
+                      account.isGroup
+                        ? 'bg-slate-50/70 dark:bg-slate-800/40 font-semibold'
+                        : 'hover:bg-slate-50/80 dark:hover:bg-slate-800/60'
+                    }`}
+                  >
+                    <Td>
+                      <span className="num font-mono font-bold text-slate-800 dark:text-slate-200 text-xs">
+                        {account.code}
+                      </span>
+                    </Td>
+
+                    <Td>
+                      <div
+                        className="flex items-center gap-2"
+                        style={{ paddingInlineStart: `${Math.min(account.depth || 0, 5) * 14}px` }}
+                      >
+                        {account.isGroup ? (
+                          <DaftraFolderIcon className="w-5 h-5 text-sky-600 shrink-0 inline" />
+                        ) : (
+                          <DaftraDocIcon className="w-4 h-4 text-slate-400 shrink-0 inline" />
+                        )}
+                        <span className={`truncate ${account.isGroup ? 'font-bold text-slate-900 dark:text-white' : 'text-slate-700 dark:text-slate-300'}`}>
+                          {accountLabel(account, lang)}
+                        </span>
+                      </div>
+                    </Td>
+
+                    <Td>
+                      <Badge tone={normalBal === 'debit' ? 'sky' : 'amber'}>
+                        {normalBal === 'debit' ? 'مدين' : 'دائن'}
+                      </Badge>
+                    </Td>
+
+                    <Td>
+                      {account.isGroup ? (
+                        <span className="inline-flex items-center rounded-md border border-blue-200 bg-blue-50 dark:bg-blue-950/40 dark:border-blue-800 px-2 py-0.5 text-[11px] font-bold text-blue-700 dark:text-blue-300">
+                          رئيسي
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center rounded-md border border-slate-200 bg-slate-100 dark:bg-slate-800 dark:border-slate-700 px-2 py-0.5 text-[11px] font-semibold text-slate-600 dark:text-slate-300">
+                          فرعي
+                        </span>
+                      )}
+                    </Td>
+
+                    <Td className="text-end">
+                      <span className="num font-mono text-xs text-slate-600 dark:text-slate-300">
+                        {debitValue > 0 ? formatMoney(debitValue) : '0.00'}
+                      </span>
+                    </Td>
+
+                    <Td className="text-end">
+                      <span className="num font-mono text-xs text-slate-600 dark:text-slate-300">
+                        {creditValue > 0 ? formatMoney(creditValue) : '0.00'}
+                      </span>
+                    </Td>
+
+                    <Td className="text-end">
+                      <span className={`num font-mono font-bold text-xs ${
+                        balanceValue < 0
+                          ? 'text-red-600 dark:text-red-400'
+                          : balanceValue > 0
+                          ? 'text-slate-900 dark:text-white'
+                          : 'text-slate-400 dark:text-slate-500'
+                      }`}>
+                        {formatMoney(balanceValue)}
+                      </span>
+                    </Td>
+
+                    <Td>
+                      <div className="flex items-center justify-end gap-1">
+                        {account.isGroup && (
+                          <button
+                            type="button"
+                            onClick={() => setEditing({ presetParentCode: account.code })}
+                            title="إضافة فرعي / مجموعة بالداخل"
+                            className="rounded-lg p-1.5 text-emerald-600 transition hover:bg-emerald-50 font-extrabold"
+                          >
+                            <IconPlus className="h-4 w-4 shrink-0" />
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => setStatementAccount(account)}
+                          title={t('acct.viewStatement')}
+                          className="rounded-lg p-1.5 text-slate-400 transition hover:bg-slate-100 hover:text-brand-600 dark:hover:bg-slate-700"
+                        >
+                          <IconFileText className="h-4 w-4 shrink-0" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setEditing(account)}
+                          title={t('common.edit')}
+                          className="rounded-lg p-1.5 text-slate-400 transition hover:bg-slate-100 hover:text-slate-700 dark:hover:bg-slate-700"
+                        >
+                          <IconPencil className="h-4 w-4 shrink-0" />
+                        </button>
+                        {!account.role && (
+                          <button
+                            type="button"
+                            onClick={() => setRemoving(account)}
+                            title={t('common.delete')}
+                            className="rounded-lg p-1.5 text-slate-400 transition hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-950/50"
+                          >
+                            <IconTrash className="h-4 w-4 shrink-0" />
+                          </button>
+                        )}
+                      </div>
+                    </Td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </TableWrap>
+
+          {/* Table Pagination */}
+          <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-100 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-900/50 px-4 py-3 text-xs font-semibold text-slate-500">
+            <div>
+              عرض {(currentPage - 1) * pageSize + 1} - {Math.min(currentPage * pageSize, tableItems.length)} من {tableItems.length} حساب
+            </div>
+
+            <div className="flex items-center gap-1">
               <button
                 type="button"
-                onClick={() => setSelected(null)}
-                className="rounded-lg px-2 py-0.5 text-xs font-bold text-brand-700 hover:bg-brand-100 shrink-0"
-                title="إزالة التصفية وعرض الكل"
+                disabled={currentPage <= 1}
+                onClick={() => setPage((p) => Math.max(1, p - 1))}
+                className="grid h-7 w-7 place-items-center rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-200 transition hover:bg-slate-50 disabled:opacity-40"
               >
-                إظهار الكل ✕
+                ‹
+              </button>
+              {Array.from({ length: totalPages }, (_, i) => i + 1).slice(Math.max(0, currentPage - 3), Math.min(totalPages, currentPage + 2)).map((p) => (
+                <button
+                  key={p}
+                  type="button"
+                  onClick={() => setPage(p)}
+                  className={`grid h-7 min-w-[28px] place-items-center rounded-lg border px-2 text-xs font-bold transition ${
+                    currentPage === p
+                      ? 'border-brand-600 bg-brand-600 text-white shadow-xs'
+                      : 'border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 hover:bg-slate-50'
+                  }`}
+                >
+                  {p}
+                </button>
+              ))}
+              <button
+                type="button"
+                disabled={currentPage >= totalPages}
+                onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                className="grid h-7 w-7 place-items-center rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-200 transition hover:bg-slate-50 disabled:opacity-40"
+              >
+                ›
               </button>
             </div>
-          )}
-
-          <div className="max-h-[600px] overflow-y-auto pr-1 space-y-0.5 scrollbar-thin">
-            {treeNodes.map((node) => (
-              <TreeNavNode
-                key={node.id}
-                node={node}
-                expanded={expanded}
-                toggle={toggle}
-                selected={selected}
-                onSelect={(item) => { setSelected(item); setPage(1); }}
-                onAddChild={(item) => setEditing({ presetParentCode: item.code })}
-                lang={lang}
-              />
-            ))}
           </div>
         </div>
-
-        {/* الجدول الرئيسي لعرض بيانات وأرصدة الحسابات */}
-        <div className="space-y-4 xl:col-span-3">
-          {visible.length === 0 ? (
-            <p className="card px-4 py-12 text-center text-sm text-slate-400">{t('reports.empty')}</p>
-          ) : (
-            <div className="card overflow-hidden">
-              <TableWrap>
-                <thead>
-                  <tr>
-                    <Th>الكود</Th>
-                    <Th>اسم الحساب</Th>
-                    <Th>المستوى</Th>
-                    <Th>مدين</Th>
-                    <Th>دائن</Th>
-                    <Th>الرصيد</Th>
-                    <Th>الحالة</Th>
-                    <Th className="w-px text-center">الإجراءات</Th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {pagedItems.map((account) => {
-                    const bal = rolled.get(account.id)
-                    const ownBal = balanceById.get(account.id)
-                    const code = String(account.code)
-                    const kids = childCount.get(code) ?? 0
-                    const open = term ? true : expanded.has(code)
-                    const isSelected = selected?.id === account.id
-                    const balanceValue = bal ? bal.balance : 0
-                    const debitValue = bal ? bal.debit : (ownBal?.debit ?? 0)
-                    const creditValue = bal ? bal.credit : (ownBal?.credit ?? 0)
-
-                    return (
-                      <tr
-                        key={account.id}
-                        className={`transition ${account.isGroup ? 'bg-slate-50/60 font-semibold' : 'hover:bg-slate-50/80'} ${
-                          isSelected ? 'bg-brand-50/50' : ''
-                        }`}
-                      >
-                        <Td>
-                          <span className="num font-extrabold text-slate-800">{account.code}</span>
-                        </Td>
-
-                        <Td>
-                          <div className="flex items-center gap-2" style={{ paddingInlineStart: `${account.depth * 14}px` }}>
-                            {kids > 0 ? (
-                              <button
-                                type="button"
-                                onClick={() => toggle(code)}
-                                className="grid h-5 w-5 shrink-0 place-items-center text-slate-400 hover:text-slate-700"
-                              >
-                                <IconChevronDown className={`h-3.5 w-3.5 transition-transform ${open ? '' : '-rotate-90 rtl:rotate-90'}`} />
-                              </button>
-                            ) : (
-                              <span className="w-5 shrink-0" />
-                            )}
-                            {account.isGroup ? (
-                              <IconFolder className="h-4 w-4 text-amber-500 shrink-0 inline" />
-                            ) : (
-                              <IconFileText className="h-4 w-4 text-slate-400 shrink-0 inline" />
-                            )}
-                            <span className={`truncate ${account.isGroup ? 'font-extrabold text-slate-900' : 'font-semibold text-slate-700'}`}>
-                              {accountLabel(account, lang)}
-                            </span>
-                            {account.isGroup && (
-                              <button
-                                type="button"
-                                onClick={(e) => {
-                                  e.stopPropagation()
-                                  setEditing({ presetParentCode: account.code })
-                                }}
-                                title="إضافة حساب فرعي أو مجموعة بداخل هذا الحساب"
-                                className="inline-flex items-center gap-1 rounded-md bg-emerald-50 px-1.5 py-0.5 text-[10px] font-extrabold text-emerald-700 hover:bg-emerald-600 hover:text-white transition border border-emerald-200/60 ms-1 shrink-0"
-                              >
-                                + إضافة فرعي
-                              </button>
-                            )}
-                          </div>
-                        </Td>
-
-                        <Td>{getLevelBadge(account)}</Td>
-
-                        <Td>
-                          <span className="num text-slate-600">{debitValue > 0 ? formatMoney(debitValue) : '0.00'}</span>
-                        </Td>
-
-                        <Td>
-                          <span className="num text-slate-600">{creditValue > 0 ? formatMoney(creditValue) : '0.00'}</span>
-                        </Td>
-
-                        <Td>
-                          <span className={`num font-bold ${balanceValue < 0 ? 'text-red-600' : 'text-slate-900'}`}>
-                            {formatMoney(balanceValue)}
-                          </span>
-                        </Td>
-
-                        <Td>
-                          <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-0.5 text-[11px] font-bold text-emerald-700">
-                            <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
-                            نشط
-                          </span>
-                        </Td>
-
-                        <Td>
-                          <div className="flex items-center justify-end gap-1">
-                            {account.isGroup && (
-                              <button
-                                type="button"
-                                onClick={() => setEditing({ presetParentCode: account.code })}
-                                title="إضافة فرعي / مجموعة بالداخل"
-                                className="rounded-lg p-1.5 text-emerald-600 transition hover:bg-emerald-50 font-extrabold"
-                              >
-                                <svg className="h-4 w-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M12 4v16m8-8H4" />
-                                </svg>
-                              </button>
-                            )}
-                            <button
-                              type="button"
-                              onClick={() => setStatementAccount(account)}
-                              title={t('acct.viewStatement')}
-                              className="rounded-lg p-1.5 text-slate-400 transition hover:bg-slate-100 hover:text-brand-600"
-                            >
-                              <IconFileText className="h-4 w-4 shrink-0" />
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => setEditing(account)}
-                              title={t('common.edit')}
-                              className="rounded-lg p-1.5 text-slate-400 transition hover:bg-slate-100 hover:text-slate-700"
-                            >
-                              <IconPencil className="h-4 w-4 shrink-0" />
-                            </button>
-                            {!account.role && (
-                              <button
-                                type="button"
-                                onClick={() => setRemoving(account)}
-                                title={t('common.delete')}
-                                className="rounded-lg p-1.5 text-slate-400 transition hover:bg-red-50 hover:text-red-600"
-                              >
-                                <IconTrash className="h-4 w-4 shrink-0" />
-                              </button>
-                            )}
-                          </div>
-                        </Td>
-                      </tr>
-                    )
-                  })}
-                </tbody>
-              </TableWrap>
-
-              {/* شريط التنقل وتعدد الصفحات Pagination */}
-              <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-100 bg-slate-50/50 px-4 py-3 text-xs font-semibold text-slate-500">
-                <div>
-                  عرض {(currentPage - 1) * pageSize + 1} - {Math.min(currentPage * pageSize, visible.length)} من {visible.length} حساب
-                </div>
-
-                <div className="flex items-center gap-1">
-                  <button
-                    type="button"
-                    disabled={currentPage <= 1}
-                    onClick={() => setPage((p) => Math.max(1, p - 1))}
-                    className="grid h-7 w-7 place-items-center rounded-lg border border-slate-200 bg-white text-slate-600 transition hover:bg-slate-50 disabled:opacity-40"
-                  >
-                    ‹
-                  </button>
-                  {Array.from({ length: totalPages }, (_, i) => i + 1).map((p) => (
-                    <button
-                      key={p}
-                      type="button"
-                      onClick={() => setPage(p)}
-                      className={`grid h-7 min-w-[28px] place-items-center rounded-lg border px-2 text-xs font-bold transition ${
-                        currentPage === p
-                          ? 'border-brand-600 bg-brand-600 text-white shadow-xs'
-                          : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
-                      }`}
-                    >
-                      {p}
-                    </button>
-                  ))}
-                  <button
-                    type="button"
-                    disabled={currentPage >= totalPages}
-                    onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
-                    className="grid h-7 w-7 place-items-center rounded-lg border border-slate-200 bg-white text-slate-600 transition hover:bg-slate-50 disabled:opacity-40"
-                  >
-                    ›
-                  </button>
-                </div>
-              </div>
-            </div>
-          )}
-        </div>
-      </div>
+      )}
 
       <AccountForm
         open={Boolean(editing)}
@@ -1594,10 +1732,11 @@ function AccountTree({ accounts, cleanAccounts: cleanAccountsProp, clients = [],
       <AccountStatementModal
         open={Boolean(statementAccount)}
         account={statementAccount}
-        accounts={accounts}
+        accounts={cleanAccounts}
         journal={journal}
         settings={settings}
         locale={locale}
+        invoices={invoices}
         onClose={() => setStatementAccount(null)}
       />
 
@@ -1774,15 +1913,64 @@ function AccountForm({ open, row, accounts, lang, busy, onClose, onSave }) {
           </Select>
         </Field>
 
-        <label className="flex items-center gap-3 rounded-xl border border-slate-200 px-4 py-3">
-          <input
-            type="checkbox"
-            checked={Boolean(form.isGroup)}
-            onChange={(event) => set('isGroup', event.target.checked)}
-            className="h-4 w-4 accent-brand-600"
-          />
-          <span className="text-sm font-semibold text-slate-700">{t('acct.isGroup')}</span>
-        </label>
+        <div className="space-y-1.5">
+          <label className="block text-xs font-bold text-slate-700 dark:text-slate-200">
+            {t('acct.accountClassification')}
+          </label>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <button
+              type="button"
+              onClick={() => set('isGroup', false)}
+              className={`flex items-start gap-3 rounded-xl border p-3.5 text-right transition-all cursor-pointer ${
+                !form.isGroup
+                  ? 'border-blue-500 bg-blue-50/80 text-blue-900 shadow-sm ring-1 ring-blue-500 dark:border-blue-400 dark:bg-blue-950/40 dark:text-blue-100'
+                  : 'border-slate-200 bg-white text-slate-700 hover:border-slate-300 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300'
+              }`}
+            >
+              <div
+                className={`mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full border ${
+                  !form.isGroup ? 'border-blue-600 bg-blue-600' : 'border-slate-400 dark:border-slate-500'
+                }`}
+              >
+                {!form.isGroup && <div className="h-1.5 w-1.5 rounded-full bg-white" />}
+              </div>
+              <div>
+                <div className="text-sm font-bold text-slate-900 dark:text-white">
+                  {t('acct.subAccount')}
+                </div>
+                <div className="mt-0.5 text-[11px] leading-relaxed text-slate-500 dark:text-slate-400">
+                  {t('acct.subAccountDesc')}
+                </div>
+              </div>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => set('isGroup', true)}
+              className={`flex items-start gap-3 rounded-xl border p-3.5 text-right transition-all cursor-pointer ${
+                form.isGroup
+                  ? 'border-blue-500 bg-blue-50/80 text-blue-900 shadow-sm ring-1 ring-blue-500 dark:border-blue-400 dark:bg-blue-950/40 dark:text-blue-100'
+                  : 'border-slate-200 bg-white text-slate-700 hover:border-slate-300 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300'
+              }`}
+            >
+              <div
+                className={`mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full border ${
+                  form.isGroup ? 'border-blue-600 bg-blue-600' : 'border-slate-400 dark:border-slate-500'
+                }`}
+              >
+                {form.isGroup && <div className="h-1.5 w-1.5 rounded-full bg-white" />}
+              </div>
+              <div>
+                <div className="text-sm font-bold text-slate-900 dark:text-white">
+                  {t('acct.mainAccount')}
+                </div>
+                <div className="mt-0.5 text-[11px] leading-relaxed text-slate-500 dark:text-slate-400">
+                  {t('acct.mainAccountDesc')}
+                </div>
+              </div>
+            </button>
+          </div>
+        </div>
       </div>
     </Modal>
   )
@@ -1805,7 +1993,7 @@ export function JournalView({ entries, lang, locale }) {
         <div key={entry.id} className="card overflow-hidden">
           <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 bg-slate-50/60 px-4 py-2.5">
             <div className="flex flex-wrap items-center gap-2">
-              <Badge tone="brand">{t(`acct.ref.${entry.refType}`)}</Badge>
+              <Badge tone="brand">{formatRefType(entry.refType, t)}</Badge>
               <span className="num text-sm font-bold text-slate-800">{entry.ref}</span>
               <span className="text-xs text-slate-500">{entry.description}</span>
             </div>
@@ -1857,36 +2045,161 @@ export function JournalView({ entries, lang, locale }) {
 /*  دفتر الأستاذ                                                       */
 /* ------------------------------------------------------------------ */
 
-export function LedgerView({ journal, accounts, lang, locale }) {
+export function LedgerView({ journal, accounts, lang, locale, invoices = [] }) {
   const { t } = useI18n()
   const [accountId, setAccountId] = useState(accounts[0]?.id ?? '')
+  const [categoryFilter, setCategoryFilter] = useState('all') // 'all' | 'accounts' | 'employee' | 'client' | 'vendor'
+  const [filterSubId, setFilterSubId] = useState('all')
+  const [showSubBalances, setShowSubBalances] = useState(false)
 
-  const rows = useMemo(() => accountMovements(journal, accountId, accounts), [journal, accountId, accounts])
+  const handleAccountChange = (val) => {
+    setAccountId(val)
+    setFilterSubId('all')
+  }
+
   const account = accounts.find((item) => item.id === accountId)
 
   const options = useMemo(
     () =>
-      accounts.map((item) => ({
-        id: item.id,
-        name: `${item.code} — ${accountLabel(item, lang)}`,
-        code: item.code,
-        isGroup: item.isGroup,
-        icon: item.isGroup ? '📁' : '📄',
-        badge: item.isGroup ? 'حساب رئيسي' : 'حساب فرعي',
-      })),
+      accounts.map((item) => {
+        let badge = item.isGroup ? 'حساب رئيسي' : 'حساب فرعي'
+        let category = item.category || 'account'
+        if (item.isEmployeeFullNode) {
+          badge = '👤 كشف موظف شامل'
+          category = 'employee'
+        } else if (item.isEmployeeNode) {
+          badge = item.badge || '👤 أستاذ مساعد موظف'
+          category = 'employee'
+        } else if (item.isClientNode) {
+          badge = item.badge || '👥 أستاذ مساعد عميل'
+          category = 'client'
+        } else if (item.isVendorNode) {
+          badge = item.badge || '🚚 أستاذ مساعد مورد'
+          category = 'vendor'
+        }
+        return {
+          id: item.id,
+          name: `${item.code} — ${accountLabel(item, lang)}`,
+          code: item.code,
+          isGroup: item.isGroup,
+          category,
+          badge,
+        }
+      }),
     [accounts, lang],
   )
+
+  const filteredOptions = useMemo(() => {
+    if (categoryFilter === 'all') return options
+    if (categoryFilter === 'accounts') return options.filter((o) => o.category === 'account')
+    return options.filter((o) => o.category === categoryFilter)
+  }, [options, categoryFilter])
+
+  const rowsWithoutSubFilter = useMemo(
+    () => accountMovements(journal, accountId, accounts, null),
+    [journal, accountId, accounts],
+  )
+
+  const rows = useMemo(
+    () => accountMovements(journal, accountId, accounts, filterSubId),
+    [journal, accountId, accounts, filterSubId],
+  )
+
+  // قائمة الأطراف الفرعية التابعة لحساب الأستاذ المختار (سواء كان حساباً رئيسياً أو حساب التزامات/أصول أطراف)
+  const subParties = useMemo(() => {
+    if (!account) return []
+    const isPartyGroup =
+      account.isGroup ||
+      account.role?.includes('Payable') ||
+      account.role?.includes('Advance') ||
+      account.role?.includes('receivable') ||
+      String(account.code).startsWith('1-01-03') ||
+      String(account.code).startsWith('2-01-01') ||
+      String(account.code).startsWith('2-01-03') ||
+      String(account.code).startsWith('1-01-06-02')
+
+    if (!isPartyGroup) return []
+
+    const map = new Map()
+    for (const r of rowsWithoutSubFilter) {
+      const partyId = r.subLedgerId || r.partyName
+      const partyName = r.partyName || r.clientName || r.vendorName || r.employeeName || (r.subLedgerType ? r.subLedgerName : '')
+      if (partyId && partyName) {
+        const cleanId = String(partyId).replace(/^(client|vendor|emp-payable|emp-advance|emp-full)-/, '')
+        if (!map.has(cleanId)) {
+          map.set(cleanId, {
+            id: partyId,
+            cleanId,
+            name: partyName,
+            type: r.subLedgerType,
+            debit: 0,
+            credit: 0,
+            count: 0,
+          })
+        }
+        const item = map.get(cleanId)
+        item.debit = round2(item.debit + toNumber(r.debit))
+        item.credit = round2(item.credit + toNumber(r.credit))
+        item.count += 1
+      }
+    }
+
+    const normal = getNormalBalance(account)
+    return [...map.values()]
+      .map((p) => ({
+        ...p,
+        balance: round2(normal === 'credit' ? p.credit - p.debit : p.debit - p.credit),
+      }))
+      .sort((a, b) => Math.abs(b.balance) - Math.abs(a.balance))
+  }, [account, rowsWithoutSubFilter])
+
+  const stats = useMemo(() => {
+    const totalDebit = round2(rows.reduce((sum, r) => sum + toNumber(r.debit), 0))
+    const totalCredit = round2(rows.reduce((sum, r) => sum + toNumber(r.credit), 0))
+    const closingBalance = rows.length > 0 ? rows.at(-1).balance : 0
+    return {
+      totalDebit,
+      totalCredit,
+      closingBalance,
+      count: rows.length,
+    }
+  }, [rows])
 
   return (
     <div>
       <div className="card mb-4 p-4">
+        {/* تصنيفات سريعة لاختيار نوع الحساب */}
+        <div className="mb-3 flex flex-wrap items-center gap-1.5 border-b border-slate-100 pb-3 dark:border-slate-800">
+          <span className="text-xs font-bold text-slate-500 me-2">تصنيف الحسابات:</span>
+          {[
+            { id: 'all', label: 'الكل' },
+            { id: 'accounts', label: '🏛️ الدليل المحاسبي' },
+            { id: 'employee', label: '👤 حسابات الموظفين' },
+            { id: 'client', label: '👥 حسابات العملاء' },
+            { id: 'vendor', label: '🚚 حسابات الموردين' },
+          ].map((cat) => (
+            <button
+              key={cat.id}
+              type="button"
+              onClick={() => setCategoryFilter(cat.id)}
+              className={`rounded-lg px-3 py-1.5 text-xs font-bold transition ${
+                categoryFilter === cat.id
+                  ? 'bg-brand-600 text-white shadow-sm'
+                  : 'bg-slate-100 text-slate-600 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-300'
+              }`}
+            >
+              {cat.label}
+            </button>
+          ))}
+        </div>
+
         <Field label={t('acct.account')} className="max-w-xl">
           <SearchableSelect
-            options={options}
+            options={filteredOptions}
             value={accountId}
             placeholder={t('acct.account')}
-            searchPlaceholder="ابحث باسم الحساب أو الكود..."
-            onChange={(val) => setAccountId(val)}
+            searchPlaceholder="ابحث باسم الحساب، الموظف، العميل أو الكود..."
+            onChange={handleAccountChange}
           />
         </Field>
       </div>
@@ -1894,52 +2207,215 @@ export function LedgerView({ journal, accounts, lang, locale }) {
       {account && (
         <div
           className={`mb-4 flex flex-wrap items-center justify-between gap-3 rounded-2xl border p-4 transition ${
-            account.isGroup
-              ? 'border-purple-200 bg-purple-50/70 text-purple-950'
-              : 'border-emerald-200 bg-emerald-50/70 text-emerald-950'
+            account.isEmployeeFullNode || account.isEmployeeNode
+              ? 'border-indigo-200 bg-indigo-50/70 text-indigo-950 dark:border-indigo-800 dark:bg-indigo-950/40 dark:text-indigo-200'
+              : account.isClientNode
+              ? 'border-teal-200 bg-teal-50/70 text-teal-950 dark:border-teal-800 dark:bg-teal-950/40 dark:text-teal-200'
+              : account.isVendorNode
+              ? 'border-amber-200 bg-amber-50/70 text-amber-950 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-200'
+              : account.isGroup
+              ? 'border-purple-200 bg-purple-50/70 text-purple-950 dark:border-purple-800 dark:bg-purple-950/40 dark:text-purple-200'
+              : 'border-emerald-200 bg-emerald-50/70 text-emerald-950 dark:border-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-200'
           }`}
         >
           <div className="flex items-center gap-3">
             <div
               className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-xl text-xl ${
-                account.isGroup ? 'bg-purple-500/10 text-purple-700' : 'bg-emerald-500/10 text-emerald-700'
+                account.isEmployeeFullNode || account.isEmployeeNode
+                  ? 'bg-indigo-500/10 text-indigo-700 dark:text-indigo-400'
+                  : account.isClientNode
+                  ? 'bg-teal-500/10 text-teal-700 dark:text-teal-400'
+                  : account.isVendorNode
+                  ? 'bg-amber-500/10 text-amber-700 dark:text-amber-400'
+                  : account.isGroup
+                  ? 'bg-purple-500/10 text-purple-700 dark:text-purple-400'
+                  : 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-400'
               }`}
             >
-              {account.isGroup ? '📁' : '📄'}
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                {account.isGroup ? (
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
+                ) : (
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                )}
+              </svg>
             </div>
             <div>
               <div className="flex flex-wrap items-center gap-2">
-                <span
-                  className={`num text-xs font-bold ${
-                    account.isGroup ? 'text-purple-800' : 'text-emerald-800'
-                  }`}
-                >
+                <span className="num text-xs font-bold opacity-80">
                   {account.code}
                 </span>
                 <h4 className="text-sm font-bold">{accountLabel(account, lang)}</h4>
-                <span
-                  className={`rounded-md border px-2 py-0.5 text-xs font-extrabold ${
-                    account.isGroup
-                      ? 'border-purple-300 bg-purple-100 text-purple-800'
-                      : 'border-emerald-300 bg-emerald-100 text-emerald-800'
-                  }`}
-                >
-                  {account.isGroup ? 'حساب رئيسي (تجميعي)' : 'حساب فرعي (تفصيلي)'}
+                <span className="rounded-md border px-2 py-0.5 text-xs font-extrabold bg-white/70 border-current/20">
+                  {account.badge || (account.isGroup ? 'حساب رئيسي' : 'حساب فرعي')}
                 </span>
               </div>
-              <p
-                className={`mt-0.5 text-xs ${
-                  account.isGroup ? 'text-purple-700' : 'text-emerald-700'
-                }`}
-              >
-                {account.isGroup
-                  ? 'يعرض كشف الحساب الإجمالي والتجميعي لكافة الحسابات الفرعية التابعة له.'
+              <p className="mt-0.5 text-xs opacity-75">
+                {account.isEmployeeFullNode
+                  ? 'كشف حساب موظف شامل يوضح كافة الحركات المالية المسجلة للموظف (مستحقات، رواتب، سلف، بدلات واستردادات).'
+                  : account.isEmployeeNode
+                  ? 'أستاذ مساعد تفصيلي لحساب الموظف يوضح حركة المستحقات أو السلف الخاصة به بدقة.'
+                  : account.isClientNode
+                  ? 'أستاذ مساعد تفصيلي لحساب العميل يوضح كافة الفواتير والتحصيلات والتسويات.'
+                  : account.isVendorNode
+                  ? 'أستاذ مساعد تفصيلي لحساب المورد يوضح فواتير المشتريات والمدفوعات والمستحقات.'
+                  : account.isGroup
+                  ? 'يعرض كشف الحساب الإجمالي لكافة الحسابات الفرعية التابعة له مع إمكانية التصفية بالأطراف.'
                   : 'كشف حساب تفصيلي يوضح الحركات المباشرة المسجلة على هذا الحساب.'}
               </p>
             </div>
           </div>
         </div>
       )}
+
+      {/* شريط تصفية بالأطراف الفرعية وملخص الأرصدة المساعدة (عند وجود أطراف متعددة) */}
+      {subParties.length > 0 && (
+        <div className="card mb-4 p-4 border border-indigo-100 bg-indigo-50/20 dark:border-indigo-900 dark:bg-indigo-950/20">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-xs font-bold text-slate-700 dark:text-slate-300">
+                تصفية بحسب الطرف / الحساب الفرعي:
+              </span>
+              <div className="flex flex-wrap items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => setFilterSubId('all')}
+                  className={`rounded-lg px-2.5 py-1 text-xs font-bold transition ${
+                    filterSubId === 'all'
+                      ? 'bg-brand-600 text-white shadow-sm'
+                      : 'bg-white text-slate-600 hover:bg-slate-100 border border-slate-200 dark:bg-slate-800 dark:text-slate-300 dark:border-slate-700'
+                  }`}
+                >
+                  الكل ({subParties.length})
+                </button>
+                {subParties.slice(0, 6).map((p) => (
+                  <button
+                    key={p.cleanId}
+                    type="button"
+                    onClick={() => setFilterSubId(p.cleanId)}
+                    className={`rounded-lg px-2.5 py-1 text-xs font-bold transition ${
+                      filterSubId === p.cleanId || filterSubId === p.id
+                        ? 'bg-brand-600 text-white shadow-sm'
+                        : 'bg-white text-slate-700 hover:bg-slate-100 border border-slate-200 dark:bg-slate-800 dark:text-slate-300 dark:border-slate-700'
+                    }`}
+                  >
+                    {p.name}
+                  </button>
+                ))}
+                {subParties.length > 6 && (
+                  <select
+                    value={filterSubId}
+                    onChange={(e) => setFilterSubId(e.target.value)}
+                    className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-xs font-semibold text-slate-700 dark:bg-slate-800 dark:border-slate-700 dark:text-slate-200"
+                  >
+                    <option value="all">المزيد من الأطراف ({subParties.length})...</option>
+                    {subParties.map((p) => (
+                      <option key={p.cleanId} value={p.cleanId}>
+                        {p.name} ({formatMoney(p.balance)})
+                      </option>
+                    ))}
+                  </select>
+                )}
+              </div>
+            </div>
+
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => setShowSubBalances((v) => !v)}
+              className="text-xs"
+            >
+              {showSubBalances ? 'إخفاء ملخص الأرصدة الفرعية' : 'عرض ملخص أرصدة الأستاذ المساعد'}
+            </Button>
+          </div>
+
+          {showSubBalances && (
+            <div className="mt-3 overflow-x-auto rounded-xl border border-slate-200 bg-white p-2 dark:border-slate-800 dark:bg-slate-900">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="border-b border-slate-100 bg-slate-50 dark:bg-slate-800 dark:border-slate-700 text-slate-500">
+                    <th className="p-2 text-start">الطرف / الحساب الفرعي</th>
+                    <th className="p-2 text-center">النوع</th>
+                    <th className="p-2 text-end">إجمالي المدين</th>
+                    <th className="p-2 text-end">إجمالي الدائن</th>
+                    <th className="p-2 text-end">الرصيد الصافي</th>
+                    <th className="p-2 text-center">الإجراء</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                  {subParties.map((p) => {
+                    const directSubAcc = accounts.find(
+                      (a) =>
+                        a.id === p.id ||
+                        a.employeeId === p.cleanId ||
+                        a.clientId === p.cleanId ||
+                        a.vendorId === p.cleanId,
+                    )
+                    return (
+                      <tr key={p.cleanId} className="hover:bg-slate-50/50 dark:hover:bg-slate-800/40">
+                        <td className="p-2 font-bold text-slate-800 dark:text-slate-200">{p.name}</td>
+                        <td className="p-2 text-center">
+                          <span className="rounded px-1.5 py-0.5 text-[10px] font-bold bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300">
+                            {p.type === 'employee' ? 'موظف' : p.type === 'client' ? 'عميل' : p.type === 'vendor' ? 'مورد' : 'طرف'}
+                          </span>
+                        </td>
+                        <td className="p-2 text-end num text-slate-700 dark:text-slate-300">{formatMoney(p.debit)}</td>
+                        <td className="p-2 text-end num text-slate-700 dark:text-slate-300">{formatMoney(p.credit)}</td>
+                        <td className="p-2 text-end">
+                          <span className={`num font-bold ${p.balance > 0 ? 'text-emerald-600' : p.balance < 0 ? 'text-rose-600' : 'text-slate-500'}`}>
+                            {formatMoney(p.balance)}
+                          </span>
+                        </td>
+                        <td className="p-2 text-center">
+                          {directSubAcc ? (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setAccountId(directSubAcc.id)
+                                setFilterSubId('all')
+                              }}
+                              className="font-bold text-brand-600 hover:text-brand-800 hover:underline dark:text-brand-400"
+                            >
+                              فتح كشف الحساب
+                            </button>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => setFilterSubId(p.cleanId)}
+                              className="font-bold text-slate-600 hover:text-brand-600 hover:underline dark:text-slate-400"
+                            >
+                              تصفية الحركات
+                            </button>
+                          )}
+                        </td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ملخص إحصائيات الحساب الحالي */}
+      <div className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
+        <StatCard label="عدد العمليات" value={stats.count} />
+        <StatCard label="إجمالي المدين" value={formatMoney(stats.totalDebit)} suffix={t('common.currency')} />
+        <StatCard label="إجمالي الدائن" value={formatMoney(stats.totalCredit)} suffix={t('common.currency')} />
+        <StatCard
+          label={t('acct.closingBalance')}
+          value={formatMoney(stats.closingBalance)}
+          suffix={t('common.currency')}
+          tone={
+            stats.closingBalance > 0
+              ? 'text-emerald-700 bg-emerald-50 dark:bg-emerald-950/40 dark:text-emerald-300'
+              : stats.closingBalance < 0
+              ? 'text-rose-700 bg-rose-50 dark:bg-rose-950/40 dark:text-rose-300'
+              : 'text-slate-700 bg-slate-50 dark:bg-slate-800 dark:text-slate-300'
+          }
+        />
+      </div>
 
       {rows.length === 0 ? (
         <p className="card px-4 py-12 text-center text-sm text-slate-400">{t('reports.empty')}</p>
@@ -1949,7 +2425,9 @@ export function LedgerView({ journal, accounts, lang, locale }) {
             <tr>
               <Th>{t('common.date')}</Th>
               <Th>{t('acct.reference')}</Th>
-              {account?.isGroup && <Th>الحساب الفرعي</Th>}
+              <Th>رقم العملية / الفاتورة</Th>
+              <Th>الطرف / الحساب الفرعي</Th>
+              {account?.isGroup && <Th>الحساب التابع</Th>}
               <Th>{t('common.description')}</Th>
               <Th>{t('acct.debit')}</Th>
               <Th>{t('acct.credit')}</Th>
@@ -1957,44 +2435,125 @@ export function LedgerView({ journal, accounts, lang, locale }) {
             </tr>
           </thead>
           <tbody>
-            {rows.map((row, index) => (
-              <tr key={`${row.entryId}-${index}`}>
-                <Td className="text-slate-600">{formatDate(row.date, locale)}</Td>
-                <Td>
-                  <Badge tone="slate">{t(`acct.ref.${row.refType}`)}</Badge>
-                  <span className="num ms-2 text-xs font-bold text-slate-700">{row.ref}</span>
-                </Td>
-                {account?.isGroup && (
+            {rows.map((row, index) => {
+              const party = row.employeeName || row.clientName || row.vendorName || row.partyName || (row.subLedgerType ? row.subLedgerName : '')
+              const docNum = row.invoiceNumber || row.ref
+              return (
+                <tr key={`${row.entryId}-${index}`}>
+                  <Td className="text-slate-600 whitespace-nowrap">{formatDate(row.date, locale)}</Td>
                   <Td>
-                    <span className="inline-flex items-center gap-1 rounded-md border border-purple-200 bg-purple-50 px-2 py-1 text-xs font-semibold text-purple-800">
-                      <span className="num font-bold">{row.subAccountCode}</span>
-                      <span>—</span>
-                      <span>{row.subAccountName}</span>
-                    </span>
+                    <Badge tone="slate">{formatRefType(row.refType, t)}</Badge>
                   </Td>
-                )}
-                <Td className="text-slate-600">{row.description || '—'}</Td>
-                <Td>
-                  {row.debit > 0 ? <span className="num">{formatMoney(row.debit)}</span> : <span className="text-slate-300">—</span>}
-                </Td>
-                <Td>
-                  {row.credit > 0 ? <span className="num">{formatMoney(row.credit)}</span> : <span className="text-slate-300">—</span>}
-                </Td>
-                <Td>
-                  <span className="num font-bold text-slate-900">{formatMoney(row.balance)}</span>
-                </Td>
-              </tr>
-            ))}
+                  <Td>
+                    {docNum ? (
+                      <div className="flex flex-col gap-0.5">
+                        {(() => {
+                          const targetUrl = getMovementDocUrl(row, invoices)
+                          return targetUrl ? (
+                            <a
+                              href={targetUrl}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="inline-flex items-center gap-1 font-mono text-xs font-bold text-brand-600 hover:text-brand-800 hover:underline dark:text-brand-400 group"
+                              title="فتح تفاصيل المستند في نافذة جديدة"
+                            >
+                              <span>#{docNum}</span>
+                              <svg className="w-3.5 h-3.5 opacity-60 group-hover:opacity-100 transition-opacity" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                              </svg>
+                            </a>
+                          ) : (
+                            <span className="font-mono text-xs font-bold text-slate-800 dark:text-slate-200">
+                              #{docNum}
+                            </span>
+                          )
+                        })()}
+                        {row.invoiceNumber && row.ref && row.ref !== row.invoiceNumber && (
+                          <div className="text-[10px] text-slate-500 font-medium">
+                            <span>فاتورة: </span>
+                            {(() => {
+                              const invUrl = row.invoiceId ? `/invoices/${row.invoiceId}` : getMovementDocUrl({ invoiceNumber: row.invoiceNumber }, invoices)
+                              return invUrl ? (
+                                <a
+                                  href={invUrl}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="font-mono font-bold text-slate-600 hover:text-brand-600 hover:underline dark:text-slate-400"
+                                >
+                                  #{row.invoiceNumber}
+                                </a>
+                              ) : (
+                                <span className="font-mono font-bold">#{row.invoiceNumber}</span>
+                              )
+                            })()}
+                          </div>
+                        )}
+                      </div>
+                    ) : (
+                      <span className="text-slate-400">—</span>
+                    )}
+                  </Td>
+                  <Td>
+                    {party ? (
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <span className={`inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-bold ${
+                          row.subLedgerType === 'employee' || Boolean(row.employeeName)
+                            ? 'bg-indigo-50 text-indigo-700 border border-indigo-200 dark:bg-indigo-950/60 dark:text-indigo-300 dark:border-indigo-800'
+                            : row.clientName || row.subLedgerType === 'client'
+                            ? 'bg-teal-50 text-teal-700 border border-teal-200 dark:bg-teal-950/60 dark:text-teal-300 dark:border-teal-800'
+                            : row.vendorName || row.subLedgerType === 'vendor'
+                            ? 'bg-amber-50 text-amber-700 border border-amber-200 dark:bg-amber-950/60 dark:text-amber-300 dark:border-amber-800'
+                            : 'bg-slate-100 text-slate-700 border border-slate-200 dark:bg-slate-800 dark:text-slate-300'
+                        }`}>
+                          {row.subLedgerType === 'employee' || Boolean(row.employeeName)
+                            ? 'موظف'
+                            : (row.clientName || row.subLedgerType === 'client' ? 'عميل' : (row.vendorName || row.subLedgerType === 'vendor' ? 'مورد' : 'طرف'))}
+                        </span>
+                        <span className="text-xs font-bold text-slate-800 dark:text-slate-200">
+                          {party}
+                        </span>
+                      </div>
+                    ) : (
+                      <span className="text-slate-400">—</span>
+                    )}
+                  </Td>
+                  {account?.isGroup && (
+                    <Td>
+                      <span className="inline-flex items-center gap-1 rounded-md border border-purple-200 bg-purple-50 px-2 py-1 text-xs font-semibold text-purple-800 dark:bg-purple-950/40 dark:text-purple-300 dark:border-purple-800">
+                        <span className="num font-bold">{row.subAccountCode}</span>
+                        <span>—</span>
+                        <span>{row.subAccountName}</span>
+                      </span>
+                    </Td>
+                  )}
+                  <Td className="text-slate-600 dark:text-slate-300 max-w-xs">{row.description || '—'}</Td>
+                  <Td>
+                    {row.debit > 0 ? <span className="num font-bold">{formatMoney(row.debit)}</span> : <span className="text-slate-300">—</span>}
+                  </Td>
+                  <Td>
+                    {row.credit > 0 ? <span className="num font-bold">{formatMoney(row.credit)}</span> : <span className="text-slate-300">—</span>}
+                  </Td>
+                  <Td>
+                    <span className="num font-bold text-slate-900 dark:text-white">{formatMoney(row.balance)}</span>
+                  </Td>
+                </tr>
+              )
+            })}
           </tbody>
         </TableWrap>
       )}
 
       {account && rows.length > 0 && (
-        <p className="mt-3 text-sm font-semibold text-slate-600">
-          {t('acct.closingBalance')}:{' '}
-          <span className="num font-extrabold text-slate-900">{formatMoney(rows.at(-1).balance)}</span>{' '}
-          <span className="text-xs text-slate-400">{t('common.currency')}</span>
-        </p>
+        <div className="mt-4 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-slate-200 bg-slate-50/70 p-3 dark:border-slate-800 dark:bg-slate-900/60">
+          <p className="text-sm font-semibold text-slate-600 dark:text-slate-300">
+            {t('acct.closingBalance')}:{' '}
+            <span className="num font-extrabold text-slate-900 dark:text-white">{formatMoney(rows.at(-1).balance)}</span>{' '}
+            <span className="text-xs text-slate-400">{t('common.currency')}</span>
+          </p>
+          <span className="text-xs text-slate-400">
+            إجمالي الحركات المعروضة: {rows.length} حركة
+          </span>
+        </div>
       )}
     </div>
   )
@@ -2160,8 +2719,8 @@ export function TrialBalance({ balances, lang }) {
 export function IncomeStatement({ balances, lang, revenue, expenses, profit }) {
   const { t } = useI18n()
 
-  const revenueRows = balances.filter((row) => row.account.type === 'revenue' && !row.account.isGroup && row.balance !== 0)
-  const expenseRows = balances.filter((row) => row.account.type === 'expense' && !row.account.isGroup && row.balance !== 0)
+  const revenueRows = balances.filter((row) => row.account.type === 'revenue' && (!row.account.isGroup || (row.debit !== 0 || row.credit !== 0)) && row.balance !== 0)
+  const expenseRows = balances.filter((row) => row.account.type === 'expense' && (!row.account.isGroup || (row.debit !== 0 || row.credit !== 0)) && row.balance !== 0)
 
   return (
     <div className="space-y-5">
@@ -2248,15 +2807,21 @@ function StatementSection({ title, rows, lang, total }) {
 export function BalanceSheet({ balances, lang, profit }) {
   const { t } = useI18n()
 
-  const assets = balances.filter((row) => row.account.type === 'asset' && !row.account.isGroup && row.balance !== 0)
-  const liabilities = balances.filter(
-    (row) => row.account.type === 'liability' && !row.account.isGroup && row.balance !== 0,
-  )
-  const equity = balances.filter((row) => row.account.type === 'equity' && !row.account.isGroup && row.balance !== 0)
+  const isContraEquity = (acc) =>
+    acc?.role === 'drawings' || acc?.normalBalance === 'debit' || String(acc?.code || '').startsWith('3-01-03')
 
-  const assetsTotal = assets.reduce((sum, row) => sum + row.balance, 0)
+  const isContraAsset = (acc) =>
+    acc?.role === 'accumDep' || acc?.normalBalance === 'credit'
+
+  const assets = balances.filter((row) => row.account.type === 'asset' && (!row.account.isGroup || (row.debit !== 0 || row.credit !== 0)) && row.balance !== 0)
+  const liabilities = balances.filter(
+    (row) => row.account.type === 'liability' && (!row.account.isGroup || (row.debit !== 0 || row.credit !== 0)) && row.balance !== 0,
+  )
+  const equity = balances.filter((row) => row.account.type === 'equity' && (!row.account.isGroup || (row.debit !== 0 || row.credit !== 0)) && row.balance !== 0)
+
+  const assetsTotal = assets.reduce((sum, row) => sum + (isContraAsset(row.account) ? -row.balance : row.balance), 0)
   const liabilitiesTotal = liabilities.reduce((sum, row) => sum + row.balance, 0)
-  const equityTotal = equity.reduce((sum, row) => sum + row.balance, 0) + profit
+  const equityTotal = equity.reduce((sum, row) => sum + (isContraEquity(row.account) ? -row.balance : row.balance), 0) + profit
   const rightSide = liabilitiesTotal + equityTotal
   const balanced = Math.abs(assetsTotal - rightSide) < 0.01
 
@@ -2278,17 +2843,22 @@ export function BalanceSheet({ balances, lang, profit }) {
                 </tr>
               </thead>
               <tbody>
-                {equity.map((row) => (
-                  <tr key={row.account.id}>
-                    <Td>
-                      <span className="num me-2 text-xs font-bold text-slate-400">{row.account.code}</span>
-                      <span className="text-slate-700">{accountLabel(row.account, lang)}</span>
-                    </Td>
-                    <Td>
-                      <span className="num font-bold text-slate-800">{formatMoney(row.balance)}</span>
-                    </Td>
-                  </tr>
-                ))}
+                {equity.map((row) => {
+                  const contra = isContraEquity(row.account)
+                  return (
+                    <tr key={row.account.id}>
+                      <Td>
+                        <span className="num me-2 text-xs font-bold text-slate-400">{row.account.code}</span>
+                        <span className="text-slate-700">{accountLabel(row.account, lang)}</span>
+                      </Td>
+                      <Td>
+                        <span className={`num font-bold ${contra ? 'text-rose-600' : 'text-slate-800'}`}>
+                          {contra ? `-${formatMoney(row.balance)}` : formatMoney(row.balance)}
+                        </span>
+                      </Td>
+                    </tr>
+                  )
+                })}
                 <tr>
                   <Td className="text-slate-700">{t('acct.currentProfit')}</Td>
                   <Td>
@@ -2455,7 +3025,7 @@ function FullTreeReportModal({ open, onClose, journal = [], accounts = [], setti
                     <Td className="whitespace-nowrap text-slate-600 font-medium">{formatDate(row.date, locale)}</Td>
                     <Td>
                       <div className="flex items-center gap-1.5">
-                        <Badge tone="slate">{t(`acct.ref.${row.refType}`) || row.refType}</Badge>
+                        <Badge tone="slate">{formatRefType(row.refType, t)}</Badge>
                         <span className="num text-xs font-bold text-slate-800">{row.ref}</span>
                       </div>
                     </Td>
@@ -2533,7 +3103,7 @@ function FullTreeReportModal({ open, onClose, journal = [], accounts = [], setti
   )
 }
 
-function AccountStatementModal({ open, account, accounts = [], journal, settings = {}, locale, onClose }) {
+function AccountStatementModal({ open, account, accounts = [], journal, settings = {}, locale, invoices = [], onClose }) {
   const { t, lang } = useI18n()
   const [from, setFrom] = useState('')
   const [to, setTo] = useState(todayISO())
@@ -2634,8 +3204,10 @@ function AccountStatementModal({ open, account, accounts = [], journal, settings
             <thead>
               <tr>
                 <Th>{t('common.date')}</Th>
-                {account.isGroup && <Th>الحساب الفرعي</Th>}
                 <Th>{t('acct.reference')}</Th>
+                <Th>رقم العملية / الفاتورة</Th>
+                <Th>العميل / الطرف</Th>
+                {account.isGroup && <Th>الحساب الفرعي</Th>}
                 <Th>{t('common.description')}</Th>
                 <Th>{t('acct.debit')}</Th>
                 <Th>{t('acct.credit')}</Th>
@@ -2643,21 +3215,79 @@ function AccountStatementModal({ open, account, accounts = [], journal, settings
               </tr>
             </thead>
             <tbody>
-              {periodMovements.map((row, idx) => (
-                <tr key={`${row.entryId}-${idx}`}>
-                  <Td className="whitespace-nowrap text-slate-600">{formatDate(row.date, locale)}</Td>
-                  {account.isGroup && (
+              {periodMovements.map((row, idx) => {
+                const docNum = row.invoiceNumber || row.ref
+                const party = row.clientName || row.vendorName || row.partyName || (row.subLedgerType ? row.subLedgerName : '')
+                return (
+                  <tr key={`${row.entryId}-${idx}`}>
+                    <Td className="whitespace-nowrap text-slate-600">{formatDate(row.date, locale)}</Td>
                     <Td>
-                      <span className="num text-xs font-semibold text-brand-700">
-                        {row.subAccountCode} - {row.subAccountName}
-                      </span>
+                      <Badge tone="slate">{formatRefType(row.refType, t)}</Badge>
                     </Td>
-                  )}
-                  <Td>
-                    <Badge tone="slate">{t(`acct.ref.${row.refType}`) || row.refType}</Badge>
-                    <span className="num ms-2 text-xs font-bold text-slate-700">{row.ref}</span>
-                  </Td>
-                  <Td className="text-slate-700">{row.description || '—'}</Td>
+                    <Td>
+                      {docNum ? (
+                        <div className="flex flex-col gap-0.5">
+                          {(() => {
+                            const targetUrl = getMovementDocUrl(row, invoices)
+                            return targetUrl ? (
+                              <a
+                                href={targetUrl}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="inline-flex items-center gap-1 font-mono text-xs font-bold text-brand-600 hover:text-brand-800 hover:underline dark:text-brand-400 group"
+                                title="فتح تفاصيل المستند في نافذة جديدة"
+                              >
+                                <span>#{docNum}</span>
+                                <svg className="w-3.5 h-3.5 opacity-60 group-hover:opacity-100 transition-opacity" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                                </svg>
+                              </a>
+                            ) : (
+                              <span className="font-mono text-xs font-bold text-slate-800 dark:text-slate-200">
+                                #{docNum}
+                              </span>
+                            )
+                          })()}
+                          {row.invoiceNumber && row.ref && row.ref !== row.invoiceNumber && (
+                            <div className="text-[10px] text-slate-500 font-medium">
+                              <span>فاتورة: </span>
+                              {(() => {
+                                const invUrl = row.invoiceId ? `/invoices/${row.invoiceId}` : getMovementDocUrl({ invoiceNumber: row.invoiceNumber }, invoices)
+                                return invUrl ? (
+                                  <a
+                                    href={invUrl}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="font-mono font-bold text-slate-600 hover:text-brand-600 hover:underline dark:text-slate-400"
+                                  >
+                                    #{row.invoiceNumber}
+                                  </a>
+                                ) : (
+                                  <span className="font-mono font-bold">#{row.invoiceNumber}</span>
+                                )
+                              })()}
+                            </div>
+                          )}
+                        </div>
+                      ) : (
+                        <span className="text-slate-400">—</span>
+                      )}
+                    </Td>
+                    <Td>
+                      {party ? (
+                        <span className="text-xs font-bold text-slate-800 dark:text-slate-200">{party}</span>
+                      ) : (
+                        <span className="text-slate-400">—</span>
+                      )}
+                    </Td>
+                    {account.isGroup && (
+                      <Td>
+                        <span className="num text-xs font-semibold text-brand-700">
+                          {row.subAccountCode} - {row.subAccountName}
+                        </span>
+                      </Td>
+                    )}
+                    <Td className="text-slate-700">{row.description || '—'}</Td>
                   <Td>
                     <span className="num font-semibold text-slate-800">
                       {row.debit > 0 ? formatMoney(row.debit) : '—'}
@@ -2678,7 +3308,8 @@ function AccountStatementModal({ open, account, accounts = [], journal, settings
                     </span>
                   </Td>
                 </tr>
-              ))}
+              )
+            })}
             </tbody>
           </TableWrap>
         )}
@@ -2722,6 +3353,8 @@ function AccountStatementModal({ open, account, accounts = [], journal, settings
                     <Th>{t('common.date')}</Th>
                     {account.isGroup && <Th>الحساب الفرعي</Th>}
                     <Th>{t('acct.reference')}</Th>
+                    <Th>رقم العملية / الفاتورة</Th>
+                    <Th>العميل / الطرف</Th>
                     <Th>{t('common.description')}</Th>
                     <Th>{t('acct.debit')}</Th>
                     <Th>{t('acct.credit')}</Th>
@@ -2729,20 +3362,33 @@ function AccountStatementModal({ open, account, accounts = [], journal, settings
                   </tr>
                 </thead>
                 <tbody>
-                  {periodMovements.map((row, idx) => (
-                    <tr key={`print-${row.entryId}-${idx}`}>
-                      <Td className="whitespace-nowrap text-slate-600">{formatDate(row.date, locale)}</Td>
-                      {account.isGroup && (
+                  {periodMovements.map((row, idx) => {
+                    const docNum = row.invoiceNumber || row.ref
+                    const party = row.clientName || row.vendorName || row.partyName || (row.subLedgerType ? row.subLedgerName : '—')
+                    return (
+                      <tr key={`print-${row.entryId}-${idx}`}>
+                        <Td className="whitespace-nowrap text-slate-600">{formatDate(row.date, locale)}</Td>
+                        {account.isGroup && (
+                          <Td>
+                            <span className="num text-xs font-semibold text-slate-900">
+                              {row.subAccountCode} - {row.subAccountName}
+                            </span>
+                          </Td>
+                        )}
                         <Td>
-                          <span className="num text-xs font-semibold text-slate-900">
-                            {row.subAccountCode} - {row.subAccountName}
+                          <span className="text-xs font-bold text-slate-700">
+                            {formatRefType(row.refType, t)}
                           </span>
                         </Td>
-                      )}
-                      <Td>
-                        <span className="num text-xs font-bold text-slate-700">{row.ref || '—'}</span>
-                      </Td>
-                      <Td className="text-slate-700">{row.description || '—'}</Td>
+                        <Td>
+                          <span className="num text-xs font-bold text-slate-800">
+                            {docNum ? `#${docNum}` : '—'}
+                          </span>
+                        </Td>
+                        <Td>
+                          <span className="text-xs font-semibold text-slate-900">{party}</span>
+                        </Td>
+                        <Td className="text-slate-700">{row.description || '—'}</Td>
                       <Td>
                         <span className="num font-semibold text-slate-800">
                           {row.debit > 0 ? formatMoney(row.debit) : '—'}
@@ -2763,7 +3409,8 @@ function AccountStatementModal({ open, account, accounts = [], journal, settings
                         </span>
                       </Td>
                     </tr>
-                  ))}
+                  )
+                })}
                 </tbody>
               </TableWrap>
             )}
@@ -2891,6 +3538,19 @@ function AccountImportModal({ open, onClose, cleanAccounts = [] }) {
     }
   }
 
+  async function handleApplyFullStandardChart() {
+    setBusy(true)
+    setErrorMsg('')
+    try {
+      await seedAccounts(cleanAccounts)
+      setSuccessMsg('تم تطبيق واعتماد شجرة الحسابات القياسية كاملة (367 حساباً - 6 مستويات) بنجاح!')
+    } catch (err) {
+      setErrorMsg('حدث خطأ أثناء تطبيق الشجرة القياسية: ' + (err.message || ''))
+    } finally {
+      setBusy(false)
+    }
+  }
+
   async function handleRestoreDefaults() {
     setBusy(true)
     setErrorMsg('')
@@ -2921,11 +3581,6 @@ function AccountImportModal({ open, onClose, cleanAccounts = [] }) {
               {busy ? 'جاري الاستيراد...' : `تأكيد استيراد ${fileData.length} حساب`}
             </Button>
           )}
-          {activeTab === 'defaults' && (
-            <Button onClick={handleRestoreDefaults} disabled={busy}>
-              {busy ? 'جاري الاسترداد...' : 'استرداد الحسابات الافتراضية'}
-            </Button>
-          )}
           <Button variant="ghost" onClick={onClose}>
             إغلاق
           </Button>
@@ -2937,17 +3592,6 @@ function AccountImportModal({ open, onClose, cleanAccounts = [] }) {
         <div className="flex border-b border-slate-200">
           <button
             type="button"
-            onClick={() => setActiveTab('csv')}
-            className={`border-b-2 px-4 py-2.5 text-xs font-bold transition ${
-              activeTab === 'csv'
-                ? 'border-brand-600 text-brand-600'
-                : 'border-transparent text-slate-500 hover:text-slate-700'
-            }`}
-          >
-            📥 استيراد من ملف CSV / Excel
-          </button>
-          <button
-            type="button"
             onClick={() => setActiveTab('defaults')}
             className={`border-b-2 px-4 py-2.5 text-xs font-bold transition ${
               activeTab === 'defaults'
@@ -2955,19 +3599,63 @@ function AccountImportModal({ open, onClose, cleanAccounts = [] }) {
                 : 'border-transparent text-slate-500 hover:text-slate-700'
             }`}
           >
-            🔄 استرداد الحسابات الافتراضية
+            شجرة الـ 6 مستويات القياسية (ملف الإكسيل)
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveTab('csv')}
+            className={`border-b-2 px-4 py-2.5 text-xs font-bold transition ${
+              activeTab === 'csv'
+                ? 'border-brand-600 text-brand-600'
+                : 'border-transparent text-slate-500 hover:text-slate-700'
+            }`}
+          >
+            استيراد من ملف CSV / Excel مخصص
           </button>
         </div>
 
         {successMsg && (
-          <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-xs font-bold text-emerald-800">
+          <div className="rounded-xl border border-emerald-200 bg-emerald-50 dark:bg-emerald-950/40 p-4 text-xs font-bold text-emerald-800 dark:text-emerald-300">
             {successMsg}
           </div>
         )}
 
         {errorMsg && (
-          <div className="rounded-xl border border-rose-200 bg-rose-50 p-4 text-xs font-bold text-rose-800">
+          <div className="rounded-xl border border-rose-200 bg-rose-50 dark:bg-rose-950/40 p-4 text-xs font-bold text-rose-800 dark:text-rose-300">
             {errorMsg}
+          </div>
+        )}
+
+        {activeTab === 'defaults' && (
+          <div className="space-y-4">
+            <div className="rounded-2xl border-2 border-brand-200 bg-brand-50/40 dark:bg-slate-800/80 dark:border-brand-900/60 p-5 space-y-3">
+              <div className="flex items-center justify-between">
+                <h4 className="text-sm font-extrabold text-slate-900 dark:text-white flex items-center gap-2">
+                  <span>شجرة الحسابات القياسية ذات الـ 6 مستويات (367 حساباً)</span>
+                  <span className="rounded-full bg-brand-100 text-brand-700 font-bold px-2 py-0.5 text-[10px]">موصى به</span>
+                </h4>
+              </div>
+              <p className="text-xs leading-relaxed text-slate-600 dark:text-slate-300">
+                هذا الإجراء يقوم بتطبيق دليل الحسابات القياسي المتكامل (367 حساباً موزعاً على 6 مستويات و 8 مجموعات رئيسية: الأصول، الالتزامات، حقوق الملكية، الإيرادات، تكلفة النشاط، المصروفات التشغيلية، إيرادات ومصروفات أخرى، حسابات التسويات والإقفال).
+              </p>
+              <div className="pt-2">
+                <Button onClick={handleApplyFullStandardChart} disabled={busy}>
+                  {busy ? 'جاري التطبيق والحفظ...' : 'تطبيق واعتماد شجرة الـ 6 مستويات القياسية الآن'}
+                </Button>
+              </div>
+            </div>
+
+            <div className="rounded-2xl border border-slate-200 bg-slate-50/70 dark:bg-slate-800/40 dark:border-slate-700 p-4 space-y-2">
+              <h4 className="text-xs font-bold text-slate-800 dark:text-slate-200">استرداد الحسابات الوظيفية الناقصة فقط</h4>
+              <p className="text-[11px] leading-relaxed text-slate-500 dark:text-slate-400">
+                يفحص فقط الحسابات التي تحمل أدواراً وظيفية أساسية بالنظام (الخزينة، العملاء، الموردين، الضرائب، الرواتب) ويضيف ما ينقص منها دون تعديل بقية الحسابات.
+              </p>
+              <div className="pt-1">
+                <Button variant="ghost" size="sm" onClick={handleRestoreDefaults} disabled={busy}>
+                  {busy ? 'جاري الفحص...' : 'فحص واسترداد الحسابات الناقصة فقط'}
+                </Button>
+              </div>
+            </div>
           </div>
         )}
 
@@ -3010,15 +3698,6 @@ function AccountImportModal({ open, onClose, cleanAccounts = [] }) {
                 </div>
               </div>
             )}
-          </div>
-        )}
-
-        {activeTab === 'defaults' && (
-          <div className="rounded-2xl border border-slate-200 bg-slate-50/70 p-5 space-y-3">
-            <h4 className="text-sm font-extrabold text-slate-900">استرداد واكتمال حسابات النظام الافتراضية</h4>
-            <p className="text-xs leading-relaxed text-slate-600">
-              يقوم هذا الخيار بفحص شجرة الحسابات واسترداد أي حسابات نظام أساسية ناقصة مع ربط الأدوار الوظيفية المحاسبية دون حذف أو تعديل أي من حساباتك الخاصة الحالية.
-            </p>
           </div>
         )}
       </div>

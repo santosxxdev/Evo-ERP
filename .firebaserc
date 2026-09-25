@@ -1,5 +1,6 @@
 {
   "projects": {
-    "default": "fir-media-app-815c9"
+    "default": "iyora-help",
+    "old": "iyora-eg"
   }
 }

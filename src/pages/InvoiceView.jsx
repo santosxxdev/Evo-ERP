@@ -19,6 +19,7 @@ import { createPaymentClientSide, reversePaymentClientSide } from '../lib/client
 import { canSeeMoneyInternals } from '../lib/roles'
 import { formatDate, formatMoney, toNumber } from '../lib/format'
 import { remainingOf } from '../lib/invoice'
+import { AUTO_COMMISSION, planCommission } from '../lib/costing'
 import { JOB_COSTS_COL } from './Vendors'
 import {
   InvoiceForm,
@@ -52,8 +53,10 @@ export default function InvoiceView({ mode = 'view' }) {
   const { rows: invoices, loading } = useCollection(COL.invoices, 'date', 'desc')
   const { rows: clients } = useCollection(COL.clients, 'name', 'asc')
   const { rows: employees } = useCollection(COL.employees, 'name', 'asc')
+  const { rows: departments } = useCollection(COL.departments, 'name', 'asc')
   const { rows: services } = useCollection(COL.services, 'name', 'asc')
   const { rows: methods } = useCollection(COL.paymentMethods, 'name', 'asc')
+  const { rows: activityTypes } = useCollection(COL.activityTypes, 'name', 'asc')
   const { rows: jobCosts } = useCollection(JOB_COSTS_COL, 'date', 'desc')
   const { rows: payments } = useSubCollection(COL.invoices, id, 'payments', 'date')
 
@@ -105,9 +108,33 @@ export default function InvoiceView({ mode = 'view' }) {
         invoice.clientId,
         invoices.map((item) => (item.id === invoice.id ? { ...item, paidAmount: newPaidAmount } : item)),
       )
+
+      // مزامنة العمولة بناءً على الدفعة الجديدة
+      if (invoice.employeeId) {
+        const employee = employees.find((e) => e.id === invoice.employeeId)
+        const existing = jobCosts.find((c) => c.invoiceId === invoice.id && c.auto === AUTO_COMMISSION)
+        const patchedInvoices = invoices.map((item) => (item.id === invoice.id ? { ...item, paidAmount: newPaidAmount } : item))
+        const plan = planCommission({
+          invoice: { ...invoice, paidAmount: newPaidAmount },
+          employee,
+          existing,
+          monthInvoices: patchedInvoices,
+          departments,
+        })
+        if (plan.action === 'create') {
+          await createDoc(JOB_COSTS_COL, { ...plan.data, invoiceId: invoice.id, clientId: invoice.clientId })
+        } else if (plan.action === 'update') {
+          await updateDocById(JOB_COSTS_COL, plan.id, plan.data)
+        } else if (plan.action === 'delete') {
+          await deleteDocById(JOB_COSTS_COL, plan.id)
+        }
+      }
     } catch (err) {
       console.error(err)
-      alert(err?.message || 'حدث خطأ أثناء تسجيل الدفعة.')
+      const msg = err?.message?.includes('Quota exceeded')
+        ? 'تم تجاوز الحد اليومي لعمليات قاعدة البيانات (Quota exceeded). لا يمكن تسجيل الدفعة حالياً حتى تجديد الحصة اليومية أو ترقية الخطة إلى Blaze في Firebase.'
+        : (err?.message || 'حدث خطأ أثناء تسجيل الدفعة.')
+      alert(msg)
     }
     setBusy(false)
     setAdding(false)
@@ -124,9 +151,33 @@ export default function InvoiceView({ mode = 'view' }) {
         invoice.clientId,
         invoices.map((item) => (item.id === invoice.id ? { ...item, paidAmount: newPaidAmount } : item)),
       )
+
+      // إعادة حساب العمولة بعد إلغاء الدفعة
+      if (invoice.employeeId) {
+        const employee = employees.find((e) => e.id === invoice.employeeId)
+        const existing = jobCosts.find((c) => c.invoiceId === invoice.id && c.auto === AUTO_COMMISSION)
+        const patchedInvoices = invoices.map((item) => (item.id === invoice.id ? { ...item, paidAmount: newPaidAmount } : item))
+        const plan = planCommission({
+          invoice: { ...invoice, paidAmount: newPaidAmount },
+          employee,
+          existing,
+          monthInvoices: patchedInvoices,
+          departments,
+        })
+        if (plan.action === 'create') {
+          await createDoc(JOB_COSTS_COL, { ...plan.data, invoiceId: invoice.id, clientId: invoice.clientId })
+        } else if (plan.action === 'update') {
+          await updateDocById(JOB_COSTS_COL, plan.id, plan.data)
+        } else if (plan.action === 'delete') {
+          await deleteDocById(JOB_COSTS_COL, plan.id)
+        }
+      }
     } catch (err) {
       console.error(err)
-      alert(err?.message || 'حدث خطأ أثناء إلغاء الدفعة.')
+      const msg = err?.message?.includes('Quota exceeded')
+        ? 'تم تجاوز الحد اليومي لعمليات قاعدة البيانات (Quota exceeded). لا يمكن إلغاء الدفعة حالياً حتى تجديد الحصة اليومية أو ترقية الخطة إلى Blaze في Firebase.'
+        : (err?.message || 'حدث خطأ أثناء إلغاء الدفعة.')
+      alert(msg)
     }
     setBusy(false)
     setRemoving(null)
@@ -134,9 +185,18 @@ export default function InvoiceView({ mode = 'view' }) {
 
   async function saveEdit(values, payment) {
     setBusy(true)
-    await persistInvoiceEdit({ invoice, values, payment, invoices, employees, jobCosts })
-    setBusy(false)
-    navigate(`/invoices/${invoice.id}`)
+    try {
+      await persistInvoiceEdit({ invoice, values, payment, invoices, employees, departments, jobCosts, uid: user?.uid })
+      setBusy(false)
+      navigate(`/invoices/${invoice.id}`)
+    } catch (err) {
+      console.error('Error saving invoice edit:', err)
+      setBusy(false)
+      const msg = err?.message?.includes('Quota exceeded')
+        ? 'تم تجاوز الحد اليومي لعمليات قاعدة البيانات (Quota exceeded). لا يمكن حفظ التعديل حالياً حتى يتم تجديد الحصة اليومية أو ترقية الخطة إلى Blaze في Firebase.'
+        : `حدث خطأ أثناء حفظ التعديل:\n\n${err?.message || 'خطأ غير معروف'}`
+      alert(msg)
+    }
   }
 
   /* ----- وضع التعديل ----- */
@@ -158,8 +218,10 @@ export default function InvoiceView({ mode = 'view' }) {
           invoice={invoice}
           clients={clients}
           employees={employees}
+          departments={departments}
           services={services}
           methods={methods}
+          activityTypes={activityTypes}
           settings={settings}
           busy={busy}
           onClose={() => navigate(`/invoices/${invoice.id}`)}

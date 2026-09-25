@@ -4,7 +4,8 @@ import { useAuth } from '../context/AuthContext'
 import { COL, useCollection, useSettings } from '../lib/db'
 import { ACCOUNTS_COL } from '../lib/accounts'
 import { JOB_COSTS_COL } from './Vendors'
-import { formatDate, formatMoney, round2, toNumber } from '../lib/format'
+import { formatDate, formatMoney, round2, todayISO, toNumber } from '../lib/format'
+import { calculateEmployeeTieredCommission, invoiceFees, monthlyTargetBonus } from '../lib/costing'
 import {
   createPayrollRun,
   formatPeriodId,
@@ -51,9 +52,12 @@ export default function Payroll() {
   const { rows: jobCosts } = useCollection(JOB_COSTS_COL)
   const { rows: accounts } = useCollection(ACCOUNTS_COL, 'code', 'asc')
   const { rows: accountingTransactions } = useCollection(COL.accountingTransactions)
+  const { rows: entries } = useCollection(COL.employeeEntries, 'date', 'desc')
+  const { rows: invoices } = useCollection(COL.invoices, 'date', 'desc')
+  const { rows: vouchers } = useCollection(COL.vouchers, 'date', 'desc')
 
   // 2. Period Selection State
-  const defaultMonthStr = '2026-10'
+  const defaultMonthStr = todayISO().slice(0, 7)
   const [selectedMonth, setSelectedMonth] = useState(defaultMonthStr)
 
   const [year, month] = useMemo(() => {
@@ -135,6 +139,8 @@ export default function Payroll() {
   const deptMap = useMemo(() => new Map(departments.map((d) => [d.id, d.name])), [departments])
   const posMap = useMemo(() => new Map(positions.map((p) => [p.id, p.title])), [positions])
 
+  const accountMap = useMemo(() => new Map(accounts.map((d) => [d.id, d])), [accounts])
+
   // Subledger Advance Balances (110203)
   const employeeAdvanceBalances = useMemo(() => {
     const balancesMap = new Map()
@@ -142,21 +148,69 @@ export default function Payroll() {
       const subledgerCode = `emp-advance-${emp.id}`
       let debits = 0
       let credits = 0
+
       accountingTransactions.forEach((tx) => {
         if (!tx.lines) return
         tx.lines.forEach((l) => {
-          if (l.accountId === '110203' || String(l.code) === '110203') {
-            if (l.subledgerId === subledgerCode || l.subledger === subledgerCode) {
-              debits += Number(l.debit) || 0
-              credits += Number(l.credit) || 0
-            }
+          const acc = accountMap.get(l.accountId)
+          const isAcc =
+            acc?.code === '110203' ||
+            String(acc?.code).startsWith('110203') ||
+            acc?.role === 'employeeAdvance' ||
+            l.accountId === '110203' ||
+            String(l.code) === '110203'
+
+          const isEmp =
+            l.subledgerId === subledgerCode ||
+            l.subledger === subledgerCode ||
+            l.subLedgerId === subledgerCode ||
+            (l.subLedgerType === 'employee' && (
+              l.subLedgerId === emp.id ||
+              l.subLedgerId === subledgerCode ||
+              String(l.subLedgerId).replace(/^emp-(payable|advance)-/, '') === emp.id
+            )) ||
+            l.employeeId === emp.id ||
+            (l.subLedgerName && l.subLedgerName.trim().toLowerCase() === emp.name?.trim().toLowerCase())
+
+          if (isAcc && isEmp) {
+            debits += Number(l.debit) || 0
+            credits += Number(l.credit) || 0
           }
         })
       })
+
+      // Also scan vouchers (journalEntries) in case they exist directly
+      vouchers.forEach((v) => {
+        if (!v.lines) return
+        v.lines.forEach((l) => {
+          const acc = accountMap.get(l.accountId)
+          const isAcc =
+            acc?.code === '110203' ||
+            String(acc?.code).startsWith('110203') ||
+            acc?.role === 'employeeAdvance' ||
+            l.accountId === '110203' ||
+            String(l.code) === '110203'
+
+          const isEmp =
+            (l.subLedgerType === 'employee' && (
+              l.subLedgerId === emp.id ||
+              l.subLedgerId === subledgerCode ||
+              String(l.subLedgerId).replace(/^emp-(payable|advance)-/, '') === emp.id
+            )) ||
+            l.employeeId === emp.id ||
+            (l.subLedgerName && l.subLedgerName.trim().toLowerCase() === emp.name?.trim().toLowerCase())
+
+          if (isAcc && isEmp && !accountingTransactions.some((tx) => tx.sourceId === v.id)) {
+            debits += Number(l.debit) || 0
+            credits += Number(l.credit) || 0
+          }
+        })
+      })
+
       balancesMap.set(emp.id, Math.max(0, roundMoney(debits - credits)))
     })
     return balancesMap
-  }, [employees, accountingTransactions])
+  }, [employees, accountingTransactions, vouchers, accountMap])
 
   // Subledger Payable Ledger Balances (210201)
   const employeePayableLedger = useMemo(() => {
@@ -168,11 +222,29 @@ export default function Payroll() {
       accountingTransactions.forEach((tx) => {
         if (!tx.lines) return
         tx.lines.forEach((l) => {
-          if (l.accountId === '210201' || String(l.code) === '210201') {
-            if (l.subledgerId === subledgerCode || l.subledger === subledgerCode) {
-              debits += Number(l.debit) || 0
-              credits += Number(l.credit) || 0
-            }
+          const acc = accountMap.get(l.accountId)
+          const isAcc =
+            acc?.code === '210201' ||
+            String(acc?.code).startsWith('210201') ||
+            acc?.role === 'employeePayable' ||
+            l.accountId === '210201' ||
+            String(l.code) === '210201'
+
+          const isEmp =
+            l.subledgerId === subledgerCode ||
+            l.subledger === subledgerCode ||
+            l.subLedgerId === subledgerCode ||
+            (l.subLedgerType === 'employee' && (
+              l.subLedgerId === emp.id ||
+              l.subLedgerId === subledgerCode ||
+              String(l.subLedgerId).replace(/^emp-(payable|advance)-/, '') === emp.id
+            )) ||
+            l.employeeId === emp.id ||
+            (l.subLedgerName && l.subLedgerName.trim().toLowerCase() === emp.name?.trim().toLowerCase())
+
+          if (isAcc && isEmp) {
+            debits += Number(l.debit) || 0
+            credits += Number(l.credit) || 0
           }
         })
       })
@@ -183,7 +255,7 @@ export default function Payroll() {
       })
     })
     return ledgerMap
-  }, [employees, accountingTransactions])
+  }, [employees, accountingTransactions, accountMap])
 
   // Lifecycle check: Is editing allowed?
   const isEditable = useMemo(() => {
@@ -223,22 +295,66 @@ export default function Payroll() {
 
   // 5. Gather Payroll Engine Inputs
   const buildPayrollInputsForEmployees = useCallback(() => {
+    const monthKeyStr = selectedMonth || `${year}-${String(month).padStart(2, '0')}`
+
     return employees
       .filter((emp) => emp.status !== 'archived')
       .map((emp) => {
         const itemOverride = editInputs[emp.id] || {}
         const existingItem = payrollItems.find((i) => i.employeeId === emp.id) || {}
 
+        // 1. Commission from jobCosts for this employee
+        const cancelledInvoiceIds = new Set(invoices.filter((inv) => inv.cancelled).map((inv) => inv.id))
         const empJobCosts = jobCosts.filter(
-          (j) => j.employeeId === emp.id && j.status === 'paid' && !j.payrollRunId
+          (j) => j.employeeId === emp.id && (j.type === 'commission' || Number(j.amount || j.commissionAmount || 0) > 0) && (!j.payrollRunId || j.payrollRunId === periodId) && (!j.invoiceId || !cancelledInvoiceIds.has(j.invoiceId))
         )
 
         const commissionItems = empJobCosts.map((j) => ({
           jobCostId: j.id,
-          amount: Number(j.commissionAmount) || 0,
-          prePosted: Boolean(j.postedToGL),
+          amount: Number(j.amount || j.commissionAmount) || 0,
+          prePosted: Boolean(j.postedToGL || j.paid),
         }))
 
+        // 2. Entries from employeeEntries for this month
+        const empMonthEntries = entries.filter(
+          (e) => e.employeeId === emp.id && (e.date?.slice(0, 7) === monthKeyStr)
+        )
+
+        let entriesBonus = 0
+        let entriesRaise = 0
+        let entriesDeduction = 0
+
+        empMonthEntries.forEach((e) => {
+          const amt = Number(e.amount) || 0
+          if (e.type === 'bonus') entriesBonus += amt
+          else if (e.type === 'raise') entriesRaise += amt
+          else if (e.type === 'commission') {
+            commissionItems.push({
+              jobCostId: `entry_${e.id}`,
+              amount: amt,
+              prePosted: Boolean(e.paid),
+            })
+          }
+          else if (e.type === 'deduction') entriesDeduction += amt
+        })
+
+        // 3. Target Bonus & Tiered Commission from invoices for this month
+        const targetBonus = monthlyTargetBonus(emp, invoices, monthKeyStr)?.earned || 0
+        const monthInvoices = invoices.filter(
+          (inv) => inv.employeeId === emp.id && !inv.cancelled && inv.date?.slice(0, 7) === monthKeyStr
+        )
+        const totalSales = monthInvoices.reduce((sum, inv) => sum + invoiceFees(inv), 0)
+        const tierCommission = calculateEmployeeTieredCommission(emp, totalSales)?.totalCommission || 0
+
+        if (commissionItems.length === 0 && tierCommission > 0) {
+          commissionItems.push({
+            jobCostId: 'sales_tier_commission',
+            amount: tierCommission,
+            prePosted: false,
+          })
+        }
+
+        const totalCalculatedBonus = roundMoney(entriesBonus + entriesRaise + targetBonus)
         const advBalance = employeeAdvanceBalances.get(emp.id) || 0
 
         return {
@@ -253,7 +369,10 @@ export default function Payroll() {
             status: emp.status || 'active',
           },
           allowances: itemOverride.allowances || emp.allowances || [],
-          bonus: itemOverride.bonus !== undefined ? itemOverride.bonus : (existingItem.bonus ?? 0),
+          bonus:
+            itemOverride.bonus !== undefined
+              ? itemOverride.bonus
+              : (existingItem.bonus !== undefined ? existingItem.bonus : totalCalculatedBonus),
           overtime: itemOverride.overtime !== undefined ? itemOverride.overtime : (existingItem.overtime ?? 0),
           commission: {
             items: commissionItems,
@@ -268,14 +387,16 @@ export default function Payroll() {
             requestedAmount:
               itemOverride.advanceRecoveryRequested !== undefined
                 ? itemOverride.advanceRecoveryRequested
-                : (existingItem.advanceRecoveryRequested ?? 0),
+                : (existingItem.advanceRecoveryRequested !== undefined ? existingItem.advanceRecoveryRequested : advBalance),
             outstandingBalance: advBalance,
           },
           otherDeductions:
-            itemOverride.otherDeductions !== undefined ? itemOverride.otherDeductions : (existingItem.otherDeductions ?? 0),
+            itemOverride.otherDeductions !== undefined
+              ? itemOverride.otherDeductions
+              : (existingItem.otherDeductions !== undefined ? existingItem.otherDeductions : entriesDeduction),
         }
       })
-  }, [employees, editInputs, payrollItems, jobCosts, employeeAdvanceBalances, year, month, periodId])
+  }, [employees, editInputs, payrollItems, jobCosts, entries, invoices, employeeAdvanceBalances, selectedMonth, year, month, periodId])
 
   // 6. Action Handlers
   const handleCreateRun = async () => {

@@ -10,16 +10,31 @@ export async function createDepartment(values) {
     code: values.code?.trim() ?? '',
     description: values.description?.trim() ?? '',
     active: values.active !== false,
+    // Commission settings
+    commissionEnabled: Boolean(values.commissionEnabled),
+    commissionRate: Number(values.commissionRate) || 0,
+    targetAmount: Number(values.targetAmount) || 0,
+    requireTargetForCommission: Boolean(values.requireTargetForCommission),
+    overTargetCommissionEnabled: Boolean(values.overTargetCommissionEnabled),
+    overTargetCommissionRate: Number(values.overTargetCommissionRate) || 0,
   })
 }
 
 export async function updateDepartment(id, values) {
-  return updateDocById(COL.departments, id, {
+  const payload = {
     name: values.name?.trim() ?? '',
     code: values.code?.trim() ?? '',
     description: values.description?.trim() ?? '',
     active: values.active !== false,
-  })
+  }
+  // Only include commission fields if they are explicitly provided
+  if (values.commissionEnabled !== undefined) payload.commissionEnabled = Boolean(values.commissionEnabled)
+  if (values.commissionRate !== undefined) payload.commissionRate = Number(values.commissionRate) || 0
+  if (values.targetAmount !== undefined) payload.targetAmount = Number(values.targetAmount) || 0
+  if (values.requireTargetForCommission !== undefined) payload.requireTargetForCommission = Boolean(values.requireTargetForCommission)
+  if (values.overTargetCommissionEnabled !== undefined) payload.overTargetCommissionEnabled = Boolean(values.overTargetCommissionEnabled)
+  if (values.overTargetCommissionRate !== undefined) payload.overTargetCommissionRate = Number(values.overTargetCommissionRate) || 0
+  return updateDocById(COL.departments, id, payload)
 }
 
 export async function setDepartmentActive(id, active) {

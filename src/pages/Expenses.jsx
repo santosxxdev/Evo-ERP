@@ -1,10 +1,11 @@
 import { useMemo, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { useI18n } from '../i18n'
 import { COL, createDoc, deleteDocById, updateDocById, useCollection, useLookup } from '../lib/db'
 import SearchableSelect from '../components/SearchableSelect'
 import { ACCOUNTS_COL, accountLabel, treasuryAccounts } from '../lib/accounts'
 import { VENDORS_COL } from './Vendors'
-import { formatDate, formatMoney, isWithin, monthKey, monthStartISO, todayISO, toNumber } from '../lib/format'
+import { formatDate, formatMoney, isWithin, monthKey, todayISO, toNumber } from '../lib/format'
 import {
   Badge,
   Button,
@@ -23,8 +24,11 @@ import {
 } from '../components/ui'
 
 export default function Expenses() {
-  const { t, locale } = useI18n()
-  const { rows, loading } = useCollection(COL.expenses, 'date', 'desc')
+  const { t, locale, lang } = useI18n()
+  const { rows: expenseRows, loading: loadingExpenses } = useCollection(COL.expenses, 'date', 'desc')
+  const { rows: vouchers, loading: loadingVouchers } = useCollection(COL.vouchers, 'date', 'desc')
+  const loading = loadingExpenses || loadingVouchers
+
   const { rows: categories } = useCollection(COL.expenseCategories, 'name', 'asc')
   const { rows: clients } = useCollection(COL.clients, 'name', 'asc')
   const { rows: employees } = useCollection(COL.employees, 'name', 'asc')
@@ -33,31 +37,125 @@ export default function Expenses() {
   const { rows: paymentMethods } = useCollection(COL.paymentMethods, 'name', 'asc')
   const categoryMap = useLookup(categories)
   const clientMap = useLookup(clients)
+  const vendorMap = useLookup(vendors)
+  const employeeMap = useLookup(employees)
 
   const [search, setSearch] = useState('')
-  const [categoryId, setCategoryId] = useState('')
+  const [selectedAccountId, setSelectedAccountId] = useState('')
   const [from, setFrom] = useState('')
   const [to, setTo] = useState('')
   const [editing, setEditing] = useState(null)
   const [removing, setRemoving] = useState(null)
   const [busy, setBusy] = useState(false)
 
+  const accountById = useMemo(() => new Map(accounts.map((a) => [a.id, a])), [accounts])
+  const accountByCode = useMemo(() => new Map(accounts.map((a) => [String(a.code), a])), [accounts])
+
+  const subAccountOptions = useMemo(() => {
+    const postable = accounts.filter((a) => !a.isGroup)
+    return postable
+      .map((a) => ({
+        id: a.id,
+        code: String(a.code),
+        name: `${a.code} — ${accountLabel(a, lang)}`,
+        type: a.type,
+        isExpense: a.type === 'expense' || String(a.code).startsWith('5'),
+        badge:
+          a.type === 'expense' || String(a.code).startsWith('5')
+            ? 'مصروفات'
+            : a.type === 'asset'
+              ? 'أصول'
+              : a.type === 'liability'
+                ? 'التزامات'
+                : 'حساب فرعي',
+      }))
+      .sort((a, b) => {
+        if (a.isExpense && !b.isExpense) return -1
+        if (!a.isExpense && b.isExpense) return 1
+        return a.code.localeCompare(b.code)
+      })
+  }, [accounts, lang])
+
+  function resolveRowAccount(row) {
+    if (row.accountId && accountById.has(row.accountId)) {
+      return accountById.get(row.accountId)
+    }
+    if (row.accountCode && accountByCode.has(String(row.accountCode))) {
+      return accountByCode.get(String(row.accountCode))
+    }
+    if (row.target?.kind === 'account' && accountById.has(row.target.id)) {
+      return accountById.get(row.target.id)
+    }
+    if (row.categoryId) {
+      const cat = categoryMap.get(row.categoryId)
+      if (cat?.accountId && accountById.has(cat.accountId)) {
+        return accountById.get(cat.accountId)
+      }
+    }
+    return null
+  }
+
+  const combinedRows = useMemo(() => {
+    const list = [...expenseRows]
+    for (const v of vouchers) {
+      if (v.type !== 'payment') continue
+      if (v.sourceType === 'expense' && v.sourceId && expenseRows.some((e) => e.id === v.sourceId)) {
+        continue
+      }
+      const debitLine = v.lines?.find((l) => toNumber(l.debit) > 0) || v.lines?.[0]
+      const creditLine = v.lines?.find((l) => toNumber(l.credit) > 0) || v.lines?.[1]
+
+      list.push({
+        id: v.id,
+        date: v.date,
+        amount: toNumber(v.totalDebit || v.amount || 0),
+        description: v.description || v.notes || 'سند صرف',
+        accountId: debitLine?.accountId,
+        treasuryAccountId: creditLine?.accountId,
+        target: debitLine?.subLedgerName
+          ? {
+              name: debitLine.subLedgerName,
+              kind: debitLine.subLedgerType || 'other',
+              id: debitLine.subLedgerId,
+            }
+          : null,
+        source: 'voucher',
+        voucherNumber: v.number,
+      })
+    }
+    return list.sort((a, b) => (b.date || '').localeCompare(a.date || ''))
+  }, [expenseRows, vouchers])
+
   const filtered = useMemo(() => {
     const term = search.trim().toLowerCase()
-    return rows.filter((row) => {
-      if (categoryId && row.categoryId !== categoryId) return false
+    return combinedRows.filter((row) => {
+      const rowAcc = resolveRowAccount(row)
+      if (selectedAccountId && rowAcc?.id !== selectedAccountId && row.accountId !== selectedAccountId) {
+        return false
+      }
       if ((from || to) && !isWithin(row.date, from, to)) return false
       if (!term) return true
-      return [row.description, row.paidBy, row.categoryName]
+      const accName = rowAcc ? accountLabel(rowAcc, lang) : ''
+      const accCode = rowAcc?.code ? String(rowAcc.code) : ''
+      return [
+        row.description,
+        row.paidBy,
+        row.categoryName,
+        row.accountName,
+        accName,
+        accCode,
+        row.target?.name,
+        row.voucherNumber,
+      ]
         .filter(Boolean)
         .join(' ')
         .toLowerCase()
         .includes(term)
     })
-  }, [rows, search, categoryId, from, to])
+  }, [combinedRows, search, selectedAccountId, from, to, accountById, accountByCode, categoryMap, lang])
 
   const totalShown = filtered.reduce((sum, row) => sum + toNumber(row.amount), 0)
-  const monthTotal = rows
+  const monthTotal = combinedRows
     .filter((row) => monthKey(row.date) === monthKey(todayISO()))
     .reduce((sum, row) => sum + toNumber(row.amount), 0)
 
@@ -81,7 +179,14 @@ export default function Expenses() {
   return (
     <div>
       <PageHeader title={t('expenses.title')} subtitle={t('expenses.subtitle')}>
-        <Button onClick={() => setEditing({})}>+ {t('expenses.add')}</Button>
+        <div className="flex flex-wrap gap-2">
+          <Link to="/vouchers?type=payment">
+            <Button variant="secondary">
+              سندات الصرف ({vouchers.filter((v) => v.type === 'payment').length}) ←
+            </Button>
+          </Link>
+          <Button onClick={() => setEditing({})}>+ {t('expenses.add')}</Button>
+        </div>
       </PageHeader>
 
       <div className="mb-5 grid gap-4 sm:grid-cols-2">
@@ -101,7 +206,7 @@ export default function Expenses() {
         </div>
       </div>
 
-      {rows.length === 0 ? (
+      {combinedRows.length === 0 ? (
         <EmptyState
           title={t('expenses.empty')}
           message={t('expenses.emptyHint')}
@@ -113,14 +218,14 @@ export default function Expenses() {
             <SearchInput value={search} onChange={setSearch} placeholder={t('common.search')} />
 
             <Select
-              value={categoryId}
-              onChange={(event) => setCategoryId(event.target.value)}
-              className="w-auto"
+              value={selectedAccountId}
+              onChange={(event) => setSelectedAccountId(event.target.value)}
+              className="w-auto max-w-xs"
             >
-              <option value="">{t('common.all')}</option>
-              {categories.map((category) => (
-                <option key={category.id} value={category.id}>
-                  {category.name}
+              <option value="">كل الحسابات الفرعية</option>
+              {subAccountOptions.map((acc) => (
+                <option key={acc.id} value={acc.id}>
+                  {acc.name}
                 </option>
               ))}
             </Select>
@@ -133,13 +238,13 @@ export default function Expenses() {
               <Input type="date" value={to} onChange={(event) => setTo(event.target.value)} />
             </Field>
 
-            {(from || to || categoryId || search) && (
+            {(from || to || selectedAccountId || search) && (
               <Button
                 variant="ghost"
                 onClick={() => {
                   setFrom('')
                   setTo('')
-                  setCategoryId('')
+                  setSelectedAccountId('')
                   setSearch('')
                 }}
               >
@@ -152,9 +257,9 @@ export default function Expenses() {
             <thead>
               <tr>
                 <Th>{t('common.date')}</Th>
-                <Th>{t('expenses.category')}</Th>
+                <Th>الحساب الفرعي (شجرة الحسابات)</Th>
                 <Th>{t('expenses.reason')}</Th>
-                <Th>{t('expenses.target')}</Th>
+                <Th>الجهة / العميل</Th>
                 <Th>{t('expenses.treasury')}</Th>
                 <Th>{t('common.amount')}</Th>
                 <Th className="w-px">{t('common.actions')}</Th>
@@ -163,17 +268,36 @@ export default function Expenses() {
             <tbody>
               {filtered.map((row) => {
                 const auto = row.source === 'employee'
+                const rowAcc = resolveRowAccount(row)
+                const treasury = row.treasuryAccountId
+                  ? accountById.get(row.treasuryAccountId)
+                  : null
+
                 return (
                   <tr key={row.id}>
                     <Td className="text-slate-600">{formatDate(row.date, locale)}</Td>
                     <Td>
-                      <Badge tone="brand">
-                        {categoryMap.get(row.categoryId)?.name ?? row.categoryName ?? '—'}
-                      </Badge>
+                      {rowAcc ? (
+                        <span className="inline-flex items-center gap-1.5 rounded-lg border border-purple-200 bg-purple-50/80 px-2.5 py-1 text-xs font-bold text-purple-900">
+                          <span className="num font-black text-purple-700">{rowAcc.code}</span>
+                          <span>{accountLabel(rowAcc, lang)}</span>
+                        </span>
+                      ) : (
+                        <Badge tone="brand">
+                          {categoryMap.get(row.categoryId)?.name ?? row.categoryName ?? 'مصروف عام'}
+                        </Badge>
+                      )}
                     </Td>
-                    <Td className="text-slate-700">
-                      {row.description || '—'}
-                      {auto && <span className="ms-2 text-[11px] text-slate-400">({t('expenses.auto')})</span>}
+                    <Td className="text-slate-700 font-medium">
+                      <div className="flex items-center gap-2">
+                        <span>{row.description || '—'}</span>
+                        {row.source === 'voucher' && (
+                          <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-rose-50 text-rose-700 border border-rose-200">
+                            سند صرف {row.voucherNumber ? `(${row.voucherNumber})` : ''}
+                          </span>
+                        )}
+                        {auto && <span className="ms-2 text-[11px] text-slate-400">({t('expenses.auto')})</span>}
+                      </div>
                     </Td>
                     <Td>
                       {row.target?.name ? (
@@ -185,9 +309,13 @@ export default function Expenses() {
                       )}
                     </Td>
                     <Td className="text-slate-600">
-                      {row.treasuryAccountId
-                        ? accountLabel(accounts.find((a) => a.id === row.treasuryAccountId), locale === 'ar-EG' ? 'ar' : 'en')
-                        : row.paidBy || '—'}
+                      {treasury ? (
+                        <span className="text-xs font-semibold text-slate-700">
+                          {treasury.code} — {accountLabel(treasury, lang)}
+                        </span>
+                      ) : (
+                        row.paidBy || '—'
+                      )}
                     </Td>
                     <Td>
                       <span
@@ -199,7 +327,14 @@ export default function Expenses() {
                       </span>
                     </Td>
                     <Td>
-                      {auto ? (
+                      {row.source === 'voucher' ? (
+                        <Link
+                          to="/vouchers?type=payment"
+                          className="rounded-lg px-2.5 py-1.5 text-xs font-semibold text-brand-700 hover:bg-brand-50 inline-block"
+                        >
+                          عرض السند
+                        </Link>
+                      ) : auto ? (
                         <span className="text-[11px] text-slate-400">{t('expenses.autoHint')}</span>
                       ) : (
                         <div className="flex gap-1.5">
@@ -254,8 +389,6 @@ export default function Expenses() {
   )
 }
 
-const TARGET_KINDS = ['none', 'vendor', 'employee', 'client', 'account']
-
 function ExpenseForm({
   open,
   row,
@@ -273,17 +406,59 @@ function ExpenseForm({
   const [form, setForm] = useState({})
   const [touched, setTouched] = useState(false)
 
+  const postableAccounts = useMemo(() => accounts.filter((account) => !account.isGroup), [accounts])
+
+  const subAccountOptions = useMemo(() => {
+    return postableAccounts
+      .map((a) => ({
+        id: a.id,
+        code: String(a.code),
+        name: `${a.code} — ${accountLabel(a, lang)}`,
+        type: a.type,
+        isExpense: a.type === 'expense' || String(a.code).startsWith('5'),
+        badge:
+          a.type === 'expense' || String(a.code).startsWith('5')
+            ? 'مصروفات'
+            : a.type === 'asset'
+              ? 'أصول'
+              : a.type === 'liability'
+                ? 'التزامات'
+                : 'حساب فرعي',
+      }))
+      .sort((a, b) => {
+        if (a.isExpense && !b.isExpense) return -1
+        if (!a.isExpense && b.isExpense) return 1
+        return a.code.localeCompare(b.code)
+      })
+  }, [postableAccounts, lang])
+
   const key = row?.id ?? 'new'
   const [lastKey, setLastKey] = useState(null)
   if (open && lastKey !== key) {
     setLastKey(key)
+
+    // Find initial account ID from row
+    let initialAccountId = row?.accountId ?? ''
+    if (!initialAccountId && row?.accountCode) {
+      const match = postableAccounts.find((a) => String(a.code) === String(row.accountCode))
+      if (match) initialAccountId = match.id
+    }
+    if (!initialAccountId && row?.target?.kind === 'account') {
+      initialAccountId = row.target.id
+    }
+    if (!initialAccountId && row?.categoryId) {
+      const cat = categories.find((c) => c.id === row.categoryId)
+      if (cat?.accountId) initialAccountId = cat.accountId
+    }
+
     setForm({
+      accountId: initialAccountId,
       categoryId: row?.categoryId ?? '',
       description: row?.description ?? '',
       amount: row?.amount ?? '',
       date: row?.date || todayISO(),
       treasuryAccountId: row?.treasuryAccountId ?? '',
-      targetKind: row?.target?.kind ?? 'none',
+      targetKind: row?.target?.kind && row.target.kind !== 'account' ? row.target.kind : 'none',
       targetId: row?.target?.id ?? '',
       settled: row?.settled !== false,
       clientId: row?.clientId ?? '',
@@ -294,12 +469,15 @@ function ExpenseForm({
 
   const set = (field, value) => setForm((current) => ({ ...current, [field]: value }))
 
-  const invalid = !form.categoryId || toNumber(form.amount) === 0 || !form.description?.trim()
+  const selectedAccount = postableAccounts.find((a) => a.id === form.accountId)
 
-  /* ربط العميل يظهر فقط لفئات الإنفاق الإعلاني، لأنها التي قد تُموَّل من ميزانية عميل */
-  const selectedIsAdSpend = Boolean(categories.find((item) => item.id === form.categoryId)?.isAdSpend)
+  const invalid = !form.accountId || toNumber(form.amount) === 0 || !form.description?.trim()
 
-  const postable = accounts.filter((account) => !account.isGroup)
+  const selectedIsAdSpend =
+    Boolean(categories.find((item) => item.id === form.categoryId)?.isAdSpend) ||
+    String(selectedAccount?.code).startsWith('53') ||
+    selectedAccount?.role === 'costOther'
+
   const targetOptions =
     form.targetKind === 'vendor'
       ? vendors.map((v) => ({ id: v.id, name: v.name }))
@@ -307,27 +485,30 @@ function ExpenseForm({
         ? employees.map((e) => ({ id: e.id, name: e.name }))
         : form.targetKind === 'client'
           ? clients.map((c) => ({ id: c.id, name: c.name }))
-          : form.targetKind === 'account'
-            ? postable.map((a) => ({ id: a.id, name: `${a.code} — ${accountLabel(a, lang)}` }))
-            : []
+          : []
 
   const onAccountKind = form.targetKind === 'vendor' || form.targetKind === 'employee'
 
   function submit() {
     setTouched(true)
     if (invalid) return
-    const category = categories.find((item) => item.id === form.categoryId)
+
+    const matchedCat = categories.find((item) => item.accountId === form.accountId || item.id === form.categoryId)
     const target =
-      form.targetKind !== 'none' && form.targetId
+      form.targetKind && form.targetKind !== 'none' && form.targetId
         ? {
             kind: form.targetKind,
             id: form.targetId,
             name: targetOptions.find((option) => option.id === form.targetId)?.name ?? '',
           }
         : null
+
     onSave({
-      categoryId: form.categoryId,
-      categoryName: category?.name ?? '',
+      accountId: form.accountId,
+      accountCode: selectedAccount?.code ? String(selectedAccount.code) : '',
+      accountName: selectedAccount ? accountLabel(selectedAccount, lang) : '',
+      categoryId: matchedCat?.id || form.categoryId || null,
+      categoryName: selectedAccount ? accountLabel(selectedAccount, lang) : (matchedCat?.name ?? ''),
       description: form.description.trim(),
       amount: toNumber(form.amount),
       date: form.date,
@@ -338,8 +519,6 @@ function ExpenseForm({
       clientId: form.clientId || null,
     })
   }
-
-  const active = categories.filter((category) => !category.archived)
 
   return (
     <Modal
@@ -358,26 +537,46 @@ function ExpenseForm({
       }
     >
       <div className="space-y-4">
+        {/* اختيار الحساب الفرعي من شجرة الحسابات */}
         <Field
-          label={t('expenses.category')}
-          error={touched && !form.categoryId ? t('common.required') : null}
+          label="الحساب الفرعي (شجرة الحسابات)"
+          hint="اختر الحساب الفرعي من دليل وشجرة الحسابات لتسجيل وتوجيه المصروف محاسبيًا"
+          error={touched && !form.accountId ? t('common.required') : null}
         >
           <SearchableSelect
-            options={active}
-            value={form.categoryId ?? ''}
-            placeholder={t('expenses.category')}
-            searchPlaceholder="ابحث باسم فئة المصروفات..."
-            onChange={(val) => set('categoryId', val)}
+            options={subAccountOptions}
+            value={form.accountId ?? ''}
+            placeholder="اختر الحساب الفرعي للمصروف..."
+            searchPlaceholder="ابحث باسم الحساب الفرعي أو الكود..."
+            onChange={(val) => {
+              const acc = postableAccounts.find((a) => a.id === val)
+              const matchedCat = categories.find((c) => c.accountId === val)
+              const adAcc = treasuries.find((a) => a.role === 'adTreasury' || String(a.code) === '110103')
+              const isAd = matchedCat?.isAdSpend || String(acc?.code).startsWith('53')
+              setForm((current) => ({
+                ...current,
+                accountId: val,
+                categoryId: matchedCat?.id || current.categoryId,
+                treasuryAccountId: isAd && !current.treasuryAccountId && adAcc ? adAcc.id : current.treasuryAccountId,
+              }))
+            }}
           />
         </Field>
 
+        {/* سبب / بيان الصرف */}
         <Field
           label={t('expenses.reason')}
+          hint="وصف وتفاصيل العملية أو الفاتورة"
           error={touched && !form.description?.trim() ? t('common.required') : null}
         >
-          <Input value={form.description ?? ''} onChange={(event) => set('description', event.target.value)} />
+          <Input
+            value={form.description ?? ''}
+            onChange={(event) => set('description', event.target.value)}
+            placeholder="مثال: فاتورة كهرباء المقر، إيجار المكتب، شراء مستلزمات..."
+          />
         </Field>
 
+        {/* المبلغ والتاريخ */}
         <div className="grid gap-4 sm:grid-cols-2">
           <Field
             label={t('common.amount')}
@@ -391,12 +590,13 @@ function ExpenseForm({
           </Field>
         </div>
 
-        <Field label={t('expenses.treasury')} hint={t('expenses.treasuryHint')}>
+        {/* الخزينة / الحساب الدائن (المصدر) */}
+        <Field label={t('expenses.treasury')} hint="الخزنة أو الحساب البنكي / المحفظة التي تم الصرف منها">
           <Select
             value={form.treasuryAccountId ?? ''}
             onChange={(event) => set('treasuryAccountId', event.target.value)}
           >
-            <option value="">—</option>
+            <option value="">— اختر الخزينة أو الحساب البنكي —</option>
             {treasuries.map((account) => (
               <option key={account.id} value={account.id}>
                 {account.code} — {accountLabel(account, lang)}
@@ -405,47 +605,50 @@ function ExpenseForm({
           </Select>
         </Field>
 
-        <div className="grid gap-4 sm:grid-cols-2">
-          <Field label={t('expenses.targetKind')}>
-            <Select
-              value={form.targetKind ?? 'none'}
-              onChange={(event) =>
-                setForm((current) => ({ ...current, targetKind: event.target.value, targetId: '' }))
-              }
-            >
-              {TARGET_KINDS.map((kind) => (
-                <option key={kind} value={kind}>
-                  {t(`expenses.targetKind.${kind}`)}
-                </option>
-              ))}
-            </Select>
-          </Field>
-
-          {form.targetKind !== 'none' && (
-            <Field label={t('expenses.targetPick')}>
-              <SearchableSelect
-                options={targetOptions}
-                value={form.targetId ?? ''}
-                placeholder={t('expenses.targetPick')}
-                searchPlaceholder="ابحث بالاسم أو رقم الهاتف..."
-                onChange={(val) => set('targetId', val)}
-              />
+        {/* مستفيد أو جهة إضافية (اختياري) */}
+        <div className="rounded-xl border border-slate-200 bg-slate-50/50 p-3.5 space-y-3">
+          <div className="grid gap-3 sm:grid-cols-2">
+            <Field label="جهة مستفيدة / ربط إضافي (اختياري)">
+              <Select
+                value={form.targetKind ?? 'none'}
+                onChange={(event) =>
+                  setForm((current) => ({ ...current, targetKind: event.target.value, targetId: '' }))
+                }
+              >
+                <option value="none">بدون ربط إضافي (مباشر على الحساب)</option>
+                <option value="vendor">مورد / فريلانسر</option>
+                <option value="employee">موظف / عامل</option>
+                <option value="client">عميل</option>
+              </Select>
             </Field>
+
+            {form.targetKind !== 'none' && (
+              <Field label="تحديد الاسم / الجهة">
+                <SearchableSelect
+                  options={targetOptions}
+                  value={form.targetId ?? ''}
+                  placeholder="ابحث بالاسم..."
+                  searchPlaceholder="ابحث بالاسم أو رقم الهاتف..."
+                  onChange={(val) => set('targetId', val)}
+                />
+              </Field>
+            )}
+          </div>
+
+          {onAccountKind && form.targetId && (
+            <label className="flex items-center gap-3 rounded-lg border border-slate-200 bg-white px-3 py-2">
+              <input
+                type="checkbox"
+                checked={Boolean(form.settled)}
+                onChange={(event) => set('settled', event.target.checked)}
+                className="h-4 w-4 accent-brand-600"
+              />
+              <span className="text-xs font-semibold text-slate-700">تم السداد نقدًا فورًا (غير معلق على الحساب)</span>
+            </label>
           )}
         </div>
 
-        {onAccountKind && (
-          <label className="flex items-center gap-3 rounded-xl border border-slate-200 px-4 py-3">
-            <input
-              type="checkbox"
-              checked={Boolean(form.settled)}
-              onChange={(event) => set('settled', event.target.checked)}
-              className="h-4 w-4 accent-brand-600"
-            />
-            <span className="text-sm font-semibold text-slate-700">{t('expenses.settledNow')}</span>
-          </label>
-        )}
-
+        {/* ممول من ميزانية عميل لو كان الصرف لإعلانات */}
         {selectedIsAdSpend && (
           <Field label={t('expenses.forClient')} hint={t('expenses.forClientHint')}>
             <SearchableSelect

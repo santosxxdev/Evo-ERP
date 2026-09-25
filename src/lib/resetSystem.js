@@ -20,14 +20,25 @@ export async function resetSystemData(keepUserId) {
     'supplierCreditNotes',
     'vendorAdvances',
     'vendorPayments',
+    'vendorAdvanceApplications',
     'accountingTransactions',
+    'journalEntries',
     'clients',
     'employees',
     'employeeEntries',
+    'employeeDeductions',
+    'employeeAllowances',
+    'attendance',
+    'attendanceSettings',
+    'payroll',
+    'payrollRuns',
+    'payrollItems',
     'vendors',
+    'supplierPayables',
     'assets',
     'assetUsage',
     'assetLocations',
+    'assetCategories',
     'jobCosts',
     'expenses',
     'expenseCategories',
@@ -37,15 +48,16 @@ export async function resetSystemData(keepUserId) {
     'retainers',
     'campaigns',
     'maintenance',
-    'journalEntries',
     'activityTypes',
     'paymentMethods',
-    'assetCategories',
     'vendorSpecialties',
+    'departments',
+    'positions',
+    'employeeTypes',
     'counters',
   ]
 
-  // 1. Delete all payments subcollections
+  // 1. Delete all payments & subcollection groups
   try {
     const paymentsSnap = await getDocs(collectionGroup(db, 'payments'))
     for (const payDoc of paymentsSnap.docs) {
@@ -53,6 +65,15 @@ export async function resetSystemData(keepUserId) {
     }
   } catch (err) {
     console.warn('Error clearing payments collectionGroup:', err)
+  }
+
+  try {
+    const appsSnap = await getDocs(collectionGroup(db, 'applications'))
+    for (const appDoc of appsSnap.docs) {
+      await deleteDoc(appDoc.ref)
+    }
+  } catch (err) {
+    console.warn('Error clearing applications collectionGroup:', err)
   }
 
   // 2. Clear main collections

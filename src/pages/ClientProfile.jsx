@@ -96,6 +96,7 @@ export default function ClientProfile() {
         date: vLine.date,
         kind: vLine.type === 'opening' ? 'opening' : 'voucher',
         ref: vLine.number,
+        voucherId: vLine.voucherId,
         note: vLine.description,
         debit: vLine.debit,
         credit: vLine.credit,
@@ -105,6 +106,8 @@ export default function ClientProfile() {
         date: invoice.date,
         kind: 'invoice',
         ref: invoice.number,
+        invoiceId: invoice.id,
+        invoiceNumber: invoice.number,
         note: (invoice.items ?? []).map((item) => item.name).join('، '),
         debit: toNumber(invoice.total),
         credit: 0,
@@ -114,6 +117,9 @@ export default function ClientProfile() {
         date: payment.date,
         kind: 'payment',
         ref: numbers.get(payment.invoiceId) ?? '',
+        invoiceId: payment.invoiceId || null,
+        invoiceNumber: numbers.get(payment.invoiceId) ?? '',
+        paymentId: payment.id,
         note: payment.methodName || '',
         debit: 0,
         credit: toNumber(payment.amount),
@@ -341,16 +347,33 @@ function Statement({ rows, balance, compensations = [], locale }) {
             <tr key={row.key}>
               <Td className="whitespace-nowrap text-slate-600">{formatDate(row.date, locale)}</Td>
               <Td>
-                <Badge tone={row.kind === 'invoice' ? 'brand' : row.kind === 'opening' ? 'amber' : row.kind === 'payment' ? 'green' : 'slate'}>
-                  {row.kind === 'invoice'
-                    ? t('common.invoice')
-                    : row.kind === 'opening'
-                      ? 'رصيد افتتاحي'
-                      : row.kind === 'payment'
-                        ? t('acct.ref.payment')
-                        : 'قيد محاسبي'}
-                </Badge>
-                <span className="num ms-2 text-xs font-bold text-slate-700">{row.ref}</span>
+                <div className="inline-flex items-center gap-1.5 flex-wrap">
+                  <Badge tone={row.kind === 'invoice' ? 'brand' : row.kind === 'opening' ? 'amber' : row.kind === 'payment' ? 'green' : 'slate'}>
+                    {row.kind === 'invoice'
+                      ? t('common.invoice')
+                      : row.kind === 'opening'
+                        ? 'رصيد افتتاحي'
+                        : row.kind === 'payment'
+                          ? t('acct.ref.payment')
+                          : 'قيد محاسبي'}
+                  </Badge>
+                  {row.invoiceId ? (
+                    <Link
+                      to={`/invoices/${row.invoiceId}`}
+                      className="num inline-flex items-center gap-1 text-xs font-bold text-brand-600 hover:text-brand-800 hover:underline dark:text-brand-400 group"
+                      title="فتح صفحة الفاتورة"
+                    >
+                      <span>#{row.ref || row.invoiceNumber}</span>
+                      <svg className="w-3.5 h-3.5 opacity-60 group-hover:opacity-100 transition-opacity" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                      </svg>
+                    </Link>
+                  ) : row.ref ? (
+                    <span className="num text-xs font-bold text-slate-700">{row.ref}</span>
+                  ) : (
+                    <span className="text-slate-400">—</span>
+                  )}
+                </div>
               </Td>
               <Td className="max-w-[280px] truncate text-slate-600">{row.note || '—'}</Td>
               <Td>
@@ -421,7 +444,16 @@ function InvoiceList({ invoices, locale }) {
           return (
             <tr key={invoice.id}>
               <Td>
-                <span className="num font-bold text-slate-800">{invoice.number}</span>
+                <Link
+                  to={`/invoices/${invoice.id}`}
+                  className="num font-bold text-brand-600 hover:text-brand-800 hover:underline inline-flex items-center gap-1 dark:text-brand-400 group"
+                  title="فتح صفحة الفاتورة"
+                >
+                  <span>#{invoice.number}</span>
+                  <svg className="w-3.5 h-3.5 opacity-60 group-hover:opacity-100 transition-opacity" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                  </svg>
+                </Link>
               </Td>
               <Td className="whitespace-nowrap text-slate-600">{formatDate(invoice.date, locale)}</Td>
               <Td>
@@ -499,7 +531,16 @@ function ProfitList({ invoices, costs, totals, locale }) {
             return (
               <tr key={invoice.id}>
                 <Td>
-                  <span className="num font-bold text-slate-800">{invoice.number}</span>
+                  <Link
+                    to={`/invoices/${invoice.id}`}
+                    className="num font-bold text-brand-600 hover:text-brand-800 hover:underline inline-flex items-center gap-1 dark:text-brand-400 group"
+                    title="فتح صفحة الفاتورة"
+                  >
+                    <span>#{invoice.number}</span>
+                    <svg className="w-3.5 h-3.5 opacity-60 group-hover:opacity-100 transition-opacity" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                    </svg>
+                  </Link>
                 </Td>
                 <Td className="whitespace-nowrap text-slate-600">{formatDate(invoice.date, locale)}</Td>
                 <Td>

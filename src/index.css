@@ -136,6 +136,11 @@
     display: inline-block;
     unicode-bidi: isolate;
   }
+
+  td.num,
+  th.num {
+    display: table-cell !important;
+  }
 }
 
 @layer components {

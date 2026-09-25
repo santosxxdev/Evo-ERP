@@ -40,7 +40,7 @@ import QrImage from '../components/QrImage'
 import SearchableSelect from '../components/SearchableSelect'
 import { useAuth } from '../context/AuthContext'
 import { canSeeMoneyInternals } from '../lib/roles'
-import { AUTO_COMMISSION, expectedCostOfItems, lineMargin, planCommission, serviceCostBreakdown } from '../lib/costing'
+import { AUTO_COMMISSION, expectedCostOfItems, lineMargin, planCommission, resolveCommissionConfig, serviceCostBreakdown } from '../lib/costing'
 import { VENDORS_COL, JOB_COSTS_COL } from './Vendors'
 import { approveSupplierCostClientSide } from '../lib/clientVendors'
 import {
@@ -67,7 +67,7 @@ const STATUSES = ['unpaid', 'partial', 'paid', 'credit']
  * حفظ تعديل فاتورة قائمة (من صفحة التعديل): تحديث البيانات، دفعة اختيارية،
  * إعادة حساب رصيد العميل، ومزامنة عمولة الموظف مع الفاتورة الجديدة.
  */
-export async function persistInvoiceEdit({ invoice, values, payment, invoices, employees, jobCosts, uid }) {
+export async function persistInvoiceEdit({ invoice, values, payment, invoices, employees, departments = [], jobCosts, uid }) {
   const invoiceId = invoice.id
   
   await editInvoiceClientSide({ invoiceId, values, uid })
@@ -88,7 +88,7 @@ export async function persistInvoiceEdit({ invoice, values, payment, invoices, e
 
   const employee = employees.find((item) => item.id === values.employeeId)
   const existing = jobCosts.find((cost) => cost.invoiceId === invoiceId && cost.auto === AUTO_COMMISSION)
-  const plan = planCommission({ invoice: { ...values, id: invoiceId }, employee, existing })
+  const plan = planCommission({ invoice: { ...values, id: invoiceId, paidAmount }, employee, existing, monthInvoices: patched, departments })
   if (plan.action === 'create') {
     await createDoc(JOB_COSTS_COL, { ...plan.data, invoiceId, clientId: values.clientId })
   } else if (plan.action === 'update') {
@@ -108,8 +108,10 @@ export default function Invoices() {
   const { rows: invoices, loading } = useCollection(COL.invoices, 'date', 'desc')
   const { rows: clients } = useCollection(COL.clients, 'name', 'asc')
   const { rows: employees } = useCollection(COL.employees, 'name', 'asc')
+  const { rows: departments } = useCollection(COL.departments, 'name', 'asc')
   const { rows: services } = useCollection(COL.services, 'name', 'asc')
   const { rows: methods } = useCollection(COL.paymentMethods, 'name', 'asc')
+  const { rows: activityTypes } = useCollection(COL.activityTypes, 'name', 'asc')
   const { rows: jobCosts } = useCollection(JOB_COSTS_COL, 'date', 'desc')
   const { rows: vendors } = useCollection(VENDORS_COL, 'name', 'asc')
   const { rows: accounts } = useCollection(COL.accounts, 'code', 'asc')
@@ -154,13 +156,36 @@ export default function Invoices() {
     try {
       if (!invoiceId) {
         const number = await nextInvoiceNumber(settings.invoicePrefix)
-        await createInvoiceClientSide({ values, number, payment, uid: user?.uid })
+        const res = await createInvoiceClientSide({ values, number, payment, uid: user?.uid })
+        invoiceId = res.invoiceId
       } else {
         await editInvoiceClientSide({ invoiceId, values, uid: user?.uid })
+        if (payment) {
+          await createPaymentClientSide({ invoiceId, payment, uid: user?.uid })
+        }
+      }
+
+      if (invoiceId) {
+        await syncCommission(invoiceId, values)
+
+        let paidAmount = toNumber(editing?.paidAmount)
+        if (payment) {
+          paidAmount = (editing?.paidAmount || 0) + Number(payment.amount)
+        }
+        const patched = invoices.map((item) =>
+          item.id === invoiceId ? { ...item, ...values, id: invoiceId, paidAmount } : item,
+        )
+        if (!invoices.some((item) => item.id === invoiceId)) {
+          patched.push({ ...values, id: invoiceId, paidAmount, number: values.number })
+        }
+        await recalcClientTotals(values.clientId, patched)
+        if (editing?.clientId && editing.clientId !== values.clientId) {
+          await recalcClientTotals(editing.clientId, patched)
+        }
       }
     } catch (error) {
       console.error('Invoice save error:', error)
-      alert(`❌ حدث خطأ أثناء حفظ الفاتورة:\n\n${error?.message || 'خطأ غير معروف'}`)
+      alert(`حدث خطأ أثناء حفظ الفاتورة:\n\n${error?.message || 'خطأ غير معروف'}`)
     }
 
     setBusy(false)
@@ -173,7 +198,7 @@ export default function Invoices() {
 
     const employee = employees.find((item) => item.id === values.employeeId)
     const existing = jobCosts.find((cost) => cost.invoiceId === invoiceId && cost.auto === AUTO_COMMISSION)
-    const plan = planCommission({ invoice: { ...values, id: invoiceId }, employee, existing, monthInvoices: invoices })
+    const plan = planCommission({ invoice: { ...values, id: invoiceId }, employee, existing, monthInvoices: invoices, departments })
 
     if (plan.action === 'create') {
       await createDoc(JOB_COSTS_COL, { ...plan.data, invoiceId, clientId: values.clientId })
@@ -186,12 +211,17 @@ export default function Invoices() {
 
   /**
    * الإلغاء يحفظ الفاتورة ويولّد قيدًا عكسيًا بتاريخ الإلغاء،
-   * بدل الحذف الذي يمحو الأثر المحاسبي بالكامل.
+   * ويحذف العمولة التلقائية من حساب الموظف.
    */
   async function cancelInvoice(reason) {
     setBusy(true)
     try {
       await cancelInvoiceClientSide({ invoiceId: cancelling.id, cancelReason: reason, cancelledDate: todayISO(), uid: user?.uid })
+      await syncCommission(cancelling.id, { ...cancelling, cancelled: true })
+      const patched = invoices.map((item) =>
+        item.id === cancelling.id ? { ...item, cancelled: true } : item,
+      )
+      await recalcClientTotals(cancelling.clientId, patched)
     } catch (error) {
       console.error(error)
       alert(error?.message || 'حدث خطأ أثناء إلغاء الفاتورة.')
@@ -204,6 +234,11 @@ export default function Invoices() {
     setBusy(true)
     try {
       await restoreInvoiceClientSide({ invoiceId: invoice.id, uid: user?.uid })
+      await syncCommission(invoice.id, { ...invoice, cancelled: false })
+      const patched = invoices.map((item) =>
+        item.id === invoice.id ? { ...item, cancelled: false } : item,
+      )
+      await recalcClientTotals(invoice.clientId, patched)
     } catch (error) {
       console.error(error)
       alert(error?.message || 'حدث خطأ أثناء استرجاع الفاتورة.')
@@ -227,24 +262,16 @@ export default function Invoices() {
 
   if (loading) return <Loading />
 
-  const canCreate = clients.length > 0
-
   return (
     <div>
       <PageHeader title={t('invoices.title')} subtitle={t('invoices.subtitle')}>
-        <Button variant="ghost" onClick={() => setReceiptOpen(true)} disabled={!canCreate}>
+        <Button variant="ghost" onClick={() => setReceiptOpen(true)}>
           {t('receipts.button')}
         </Button>
-        <Button onClick={() => setEditing({})} disabled={!canCreate}>
+        <Button onClick={() => setEditing({})}>
           + {t('invoices.add')}
         </Button>
       </PageHeader>
-
-      {!canCreate && (
-        <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-800">
-          {t('invoices.needClient')}
-        </div>
-      )}
 
       {invoices.length === 0 ? (
         <EmptyState title={t('invoices.empty')} message={t('invoices.emptyHint')} />
@@ -373,8 +400,10 @@ export default function Invoices() {
         invoice={editing}
         clients={clients}
         employees={employees}
+        departments={departments}
         services={services}
         methods={methods}
+        activityTypes={activityTypes}
         settings={settings}
         busy={busy}
         onClose={() => setEditing(null)}
@@ -455,13 +484,121 @@ function CancelInvoiceDialog({ open, invoice, busy, onClose, onConfirm }) {
   )
 }
 
+function QuickClientModal({ open, onClose, onCreated, employees = [], activityTypes = [] }) {
+  const { t } = useI18n()
+  const [name, setName] = useState('')
+  const [businessName, setBusinessName] = useState('')
+  const [phone, setPhone] = useState('')
+  const [activityTypeId, setActivityTypeId] = useState('')
+  const [employeeId, setEmployeeId] = useState('')
+  const [address, setAddress] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [touched, setTouched] = useState(false)
+
+  const activeEmployees = employees.filter((e) => !e.archived && salesLike(e))
+
+  async function handleSave() {
+    setTouched(true)
+    if (!name.trim()) return
+    setBusy(true)
+    try {
+      const created = await createDoc(COL.clients, {
+        name: name.trim(),
+        businessName: businessName.trim(),
+        phone: phone.trim(),
+        activityTypeId: activityTypeId || null,
+        employeeId: employeeId || null,
+        address: address.trim(),
+        totalInvoiced: 0,
+        totalPaid: 0,
+        balance: 0,
+        invoicesCount: 0,
+        isParent: false,
+      })
+      onCreated({ id: created.id, name: name.trim(), businessName: businessName.trim(), employeeId: employeeId || null })
+      setName('')
+      setBusinessName('')
+      setPhone('')
+      setActivityTypeId('')
+      setEmployeeId('')
+      setAddress('')
+      setTouched(false)
+    } catch (err) {
+      console.error(err)
+      alert(err?.message || 'حدث خطأ أثناء إضافة العميل.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <Modal
+      open={open}
+      onClose={onClose}
+      title="إضافة عميل جديد"
+      footer={
+        <>
+          <Button variant="ghost" onClick={onClose}>
+            {t('common.cancel')}
+          </Button>
+          <Button onClick={handleSave} disabled={busy}>
+            {busy ? t('common.saving') : 'حفظ واختيار العميل'}
+          </Button>
+        </>
+      }
+    >
+      <div className="grid gap-4 sm:grid-cols-2">
+        <Field label={t('clients.name')} error={touched && !name.trim() ? t('common.required') : null}>
+          <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="اسم العميل الكامل..." autoFocus />
+        </Field>
+
+        <Field label={t('clients.businessName')}>
+          <Input value={businessName} onChange={(e) => setBusinessName(e.target.value)} placeholder="اسم الشركة أو النشاط..." />
+        </Field>
+
+        <Field label={t('common.phone')}>
+          <Input value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="رقم الهاتف للتواصل..." />
+        </Field>
+
+        <Field label={t('clients.activityType')}>
+          <Select value={activityTypeId} onChange={(e) => setActivityTypeId(e.target.value)}>
+            <option value="">{t('common.none')}</option>
+            {activityTypes.map((act) => (
+              <option key={act.id} value={act.id}>
+                {act.name}
+              </option>
+            ))}
+          </Select>
+        </Field>
+
+        <Field label={t('invoices.salesEmployee')} className="sm:col-span-2">
+          <Select value={employeeId} onChange={(e) => setEmployeeId(e.target.value)}>
+            <option value="">{t('common.none')}</option>
+            {activeEmployees.map((emp) => (
+              <option key={emp.id} value={emp.id}>
+                {emp.name}
+              </option>
+            ))}
+          </Select>
+        </Field>
+
+        <Field label={t('clients.address')} className="sm:col-span-2">
+          <Input value={address} onChange={(e) => setAddress(e.target.value)} placeholder="العنوان..." />
+        </Field>
+      </div>
+    </Modal>
+  )
+}
+
 export function InvoiceForm({
   open,
   invoice,
   clients,
   employees,
+  departments = [],
   services,
   methods,
+  activityTypes = [],
   settings,
   busy,
   asPage = false,
@@ -473,15 +610,19 @@ export function InvoiceForm({
   const [form, setForm] = useState({})
   const [items, setItems] = useState([emptyItem()])
   const [collect, setCollect] = useState({ amount: '', date: todayISO(), methodId: methods[0]?.id ?? '', clientAccount: '' })
+  const [quickClientOpen, setQuickClientOpen] = useState(false)
   const [touched, setTouched] = useState(false)
 
   const key = invoice?.id ?? 'new'
   const [lastKey, setLastKey] = useState(null)
   if (open && lastKey !== key) {
     setLastKey(key)
+    const initialClientId = invoice?.clientId ?? ''
+    const initialClient = clients.find((c) => c.id === initialClientId)
+    const initialEmployeeId = invoice?.employeeId || initialClient?.employeeId || ''
     setForm({
-      clientId: invoice?.clientId ?? '',
-      employeeId: invoice?.employeeId ?? '',
+      clientId: initialClientId,
+      employeeId: initialEmployeeId,
       date: invoice?.date || todayISO(),
       discount: invoice?.discountValue ?? invoice?.discount ?? '',
       discountMode: invoice?.discountMode === 'percent' ? 'percent' : 'amount',
@@ -565,7 +706,8 @@ export function InvoiceForm({
     if (!form.clientId || validItems.length === 0) return
 
     const client = clients.find((item) => item.id === form.clientId)
-    const employee = employees.find((item) => item.id === form.employeeId)
+    const effectiveEmployeeId = form.employeeId || client?.employeeId || null
+    const employee = employees.find((item) => item.id === effectiveEmployeeId)
 
     const collected = toNumber(collect.amount)
     const effectiveMethodId = collect.methodId || (methods.length > 0 ? methods[0].id : null)
@@ -599,9 +741,9 @@ export function InvoiceForm({
       clientName: client?.name ?? '',
       createdByUserId: invoice?.createdByUserId ?? profile?.id ?? user?.uid ?? null,
       createdByName: invoice?.createdByName ?? invoice?.accountantName ?? profile?.name ?? username ?? '',
-      responsibleEmployeeId: form.employeeId || null,
+      responsibleEmployeeId: effectiveEmployeeId,
       responsibleEmployeeName: employee?.name ?? '',
-      employeeId: form.employeeId || null,
+      employeeId: effectiveEmployeeId,
       employeeName: employee?.name ?? '',
       accountantName: invoice?.accountantName ?? profile?.name ?? username ?? '',
       accountantUsername: invoice?.accountantUsername ?? username ?? '',
@@ -654,14 +796,38 @@ export function InvoiceForm({
         </div>
       )}
       <div className="grid gap-4 sm:grid-cols-3">
-        <Field label={t('common.client')} error={touched && !form.clientId ? t('invoices.needClient') : null}>
+        <Field
+          label={
+            <div className="flex items-center justify-between w-full">
+              <span>{t('common.client')}</span>
+              {!locked && (
+                <button
+                  type="button"
+                  onClick={() => setQuickClientOpen(true)}
+                  className="text-xs font-bold text-brand-600 hover:text-brand-800 hover:underline inline-flex items-center gap-1"
+                >
+                  <span>+</span>
+                  <span>{t('clients.add') || 'إضافة عميل جديد'}</span>
+                </button>
+              )}
+            </div>
+          }
+          error={touched && !form.clientId ? t('invoices.needClient') : null}
+        >
           <SearchableSelect
             options={clients}
             value={form.clientId ?? ''}
             disabled={locked}
             placeholder={t('common.client')}
             searchPlaceholder="ابحث باسم العميل، الهاتف، أو الكود..."
-            onChange={(val) => set('clientId', val)}
+            onChange={(val) => {
+              const matchedClient = clients.find((c) => c.id === val)
+              setForm((current) => ({
+                ...current,
+                clientId: val,
+                employeeId: matchedClient?.employeeId || current.employeeId || '',
+              }))
+            }}
           />
         </Field>
 
@@ -673,6 +839,18 @@ export function InvoiceForm({
             searchPlaceholder="ابحث باسم الموظف..."
             onChange={(val) => set('employeeId', val)}
           />
+          {form.employeeId && (() => {
+            const emp = employees.find((e) => e.id === form.employeeId)
+            if (!emp) return null
+            const cfg = resolveCommissionConfig(emp, departments)
+            if (!cfg || cfg.commissionRate <= 0) return null
+            return (
+              <span className="mt-1 block text-xs text-sky-700 font-semibold">
+                عمولة المبيعات: {cfg.commissionRate}% {cfg.source === 'department' ? '(موروثة من القسم)' : '(تخصيص فردي)'}
+                {cfg.targetAmount > 0 && ` — تارجت: ${Number(cfg.targetAmount).toLocaleString()}`}
+              </span>
+            )
+          })()}
         </Field>
 
         <Field label={t('invoices.date')}>
@@ -1018,14 +1196,44 @@ export function InvoiceForm({
         <div className="flex flex-wrap items-center justify-end gap-2 border-t border-slate-100 px-6 py-4">
           {footerButtons}
         </div>
+        <QuickClientModal
+          open={quickClientOpen}
+          onClose={() => setQuickClientOpen(false)}
+          onCreated={(newClient) => {
+            setForm((current) => ({
+              ...current,
+              clientId: newClient.id,
+              employeeId: newClient.employeeId || current.employeeId || '',
+            }))
+            setQuickClientOpen(false)
+          }}
+          employees={employees}
+          activityTypes={activityTypes}
+        />
       </div>
     )
   }
 
   return (
-    <Modal open={open} onClose={onClose} wide title={title} footer={footerButtons}>
-      {body}
-    </Modal>
+    <>
+      <Modal open={open} onClose={onClose} wide title={title} footer={footerButtons}>
+        {body}
+      </Modal>
+      <QuickClientModal
+        open={quickClientOpen}
+        onClose={() => setQuickClientOpen(false)}
+        onCreated={(newClient) => {
+          setForm((current) => ({
+            ...current,
+            clientId: newClient.id,
+            employeeId: newClient.employeeId || current.employeeId || '',
+          }))
+          setQuickClientOpen(false)
+        }}
+        employees={employees}
+        activityTypes={activityTypes}
+      />
+    </>
   )
 }
 
@@ -1044,9 +1252,39 @@ function TotalRow({ label, value, strong }) {
   )
 }
 
+/* ------------------------------------------------------------------ */
+/*  تصميم الفاتورة الاحترافي (Executive Invoice Printable Component)   */
+/* ------------------------------------------------------------------ */
+
+function TotalSummaryItem({ label, sublabel, value, currency = 'ج.م', tone = 'normal', isNegative = false, strong = false }) {
+  const isDanger = tone === 'danger'
+  const isSuccess = tone === 'success'
+  const isWarning = tone === 'warning'
+  
+  return (
+    <div className={`flex items-center justify-between py-1 text-xs ${strong ? 'font-bold' : 'font-medium'}`}>
+      <div className="leading-tight">
+        <span className={strong ? 'text-slate-900 font-bold text-sm' : isDanger ? 'text-rose-700 font-semibold' : 'text-slate-600'}>
+          {label}
+        </span>
+        {sublabel && <span className="block text-[10px] text-slate-400 font-normal">{sublabel}</span>}
+      </div>
+      <div className={`${strong ? 'text-base font-black text-slate-900' : isDanger ? 'text-rose-600 font-bold' : isSuccess ? 'text-emerald-700 font-bold' : isWarning ? 'text-amber-700 font-bold' : 'text-slate-800 font-semibold'}`}>
+        {isNegative && '- '}
+        <span className="num">{formatMoney(Math.abs(value))}</span>
+        <span className="ms-1 text-[10px] font-normal text-slate-400">{currency}</span>
+      </div>
+    </div>
+  )
+}
+
 /**
- * جسم الفاتورة المطبوع — يُعرض على الشاشة داخل المودال، ويُطبع وحده
- * في صفحة واحدة نظيفة عبر PrintDocument.
+ * جسم الفاتورة المطبوع — تصميم احترافي تنفيذي متكامل:
+ * - بطاقة ورقية فاخرة على الشاشة
+ * - توافق كامل ودقيق مع الطباعة والتصدير A4
+ * - إبراز هوية الشركة ورقم الفاتورة وحالتها بدقة
+ * - جدول بنود منظم بتدرج لوني وترقيم وأسعار دقيقة
+ * - بطاقات متوازنة لبيانات العميل، السداد البنكي، والإجماليات
  */
 export function InvoicePrintable({ invoice, client, employeeMap, settings, locale }) {
   const { t } = useI18n()
@@ -1054,167 +1292,436 @@ export function InvoicePrintable({ invoice, client, employeeMap, settings, local
   const items = invoice.items ?? []
   const remaining = remainingOf(invoice)
 
+  const isTaxInvoice = Boolean(invoice.taxEnabled)
+  const isCancelled = Boolean(invoice.cancelled)
+  const isFullyPaid = state === 'paid' && !isCancelled
+
   return (
-    <div className="mx-auto max-w-[800px] text-slate-800 print:max-w-none">
-      <PrintHeader invoice={invoice} client={client} employeeMap={employeeMap} settings={settings} locale={locale} />
-
-      <div className="mb-4 flex flex-wrap items-center gap-2">
-        <Badge tone={statusTone(state)}>{t(`invoices.status.${state}`)}</Badge>
-        {state === 'credit' && <span className="text-xs text-sky-600">{t('invoices.overpaid')}</span>}
-        {invoice.cancelled && <Badge tone="slate">{t('invoices.cancelled')}</Badge>}
-      </div>
-
-      <table className="mb-5 w-full border-collapse text-sm">
-        <thead>
-          <tr className="border-b-2 border-slate-300 text-xs uppercase tracking-wide text-slate-500">
-            <th className="py-2 pe-2 text-start font-bold">{t('common.service')}</th>
-            <th className="py-2 px-2 text-end font-bold">{t('common.price')}</th>
-            <th className="py-2 px-2 text-end font-bold">{t('common.qty')}</th>
-            <th className="py-2 ps-2 text-end font-bold">{t('common.total')}</th>
-          </tr>
-        </thead>
-        <tbody>
-          {items.map((item, index) => (
-            <tr key={index} className="border-b border-slate-200">
-              <td className="py-2.5 pe-2 align-top">
-                <span className="font-semibold">{item.name}</span>
-                {item.isAdBudget && (
-                  <span className="ms-2 rounded bg-amber-50 px-1.5 py-0.5 text-[10px] font-bold text-amber-700">
-                    {t('services.adBudget')}
-                  </span>
-                )}
-              </td>
-              <td className="num py-2.5 px-2 text-end text-slate-600">{formatMoney(item.price)}</td>
-              <td className="num py-2.5 px-2 text-end text-slate-600">{item.qty}</td>
-              <td className="num py-2.5 ps-2 text-end font-bold">{formatMoney(item.total)}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-
-      <div className="mb-6 flex flex-wrap items-end justify-between gap-6">
-        {settings.websiteUrl && (
-          <div className="hidden shrink-0 text-center print:block">
-            <p className="mb-1 text-[10px] font-bold text-slate-700">{t('invoices.socialMediaQr')}</p>
-            <QrImage value={settings.websiteUrl} size={85} />
-            <p className="mt-1 text-[10px] text-slate-400" dir="ltr">{settings.websiteUrl}</p>
+    <div className="relative mx-auto max-w-[850px] bg-white text-slate-800 print:max-w-none print:bg-transparent">
+      {/* ختم مائي للحالات الخاصة: ملغاة أو مدفوعة */}
+      {isCancelled && (
+        <div className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center select-none overflow-hidden">
+          <div className="rotate-[-14deg] rounded-2xl border-4 border-dashed border-red-500/35 px-8 py-3 text-2xl font-black uppercase tracking-widest text-red-600/40">
+            ملغاة • CANCELLED
           </div>
-        )}
-        <div className="ms-auto w-full max-w-xs">
-        <TotalRow label={t('invoices.subtotal')} value={invoice.subtotal} />
-        {toNumber(invoice.discount) > 0 && (
-          <TotalRow
-            label={
-              invoice.discountMode === 'percent'
-                ? `${t('invoices.discount')} ${toNumber(invoice.discountValue)}%`
-                : t('invoices.discount')
-            }
-            value={-invoice.discount}
-          />
-        )}
-        {invoice.taxEnabled && (
-          <TotalRow
-            label={`${taxLabelOf(settings, invoice.taxKind) || t('invoices.tax')} ${invoice.taxRate}%`}
-            value={invoice.taxAmount}
-          />
-        )}
-        {toNumber(invoice.adBudgetTotal) > 0 && (
-          <div className="my-2 border-y border-slate-200 py-1">
-            <TotalRow
-              label={t('invoices.feesTotal')}
-              value={toNumber(invoice.feesTotal) + toNumber(invoice.taxAmount)}
-            />
-            <TotalRow label={t('invoices.adBudgetTotal')} value={invoice.adBudgetTotal} />
-          </div>
-        )}
-        <div className="mt-1 border-t-2 border-slate-300 pt-1">
-          <TotalRow label={t('invoices.total')} value={invoice.total} strong />
         </div>
-        <TotalRow label={t('invoices.paid')} value={invoice.paidAmount} />
-        {remaining > 0 && <TotalRow label={t('invoices.remaining')} value={remaining} />}
-        </div>
-      </div>
-
-      {invoice.nextPaymentDate && remaining > 0 && (
-        <p className="mb-4 rounded-lg bg-amber-50 px-4 py-2.5 text-sm font-semibold text-amber-800 print:bg-transparent print:px-0">
-          {t('invoices.nextPaymentDate')}: {formatDate(invoice.nextPaymentDate, locale)}
-        </p>
       )}
 
-      {invoice.notes && <p className="mb-4 text-sm text-slate-600">{invoice.notes}</p>}
+      {/* الشريط العلوي للترويسة والهوية */}
+      <PrintHeader
+        invoice={invoice}
+        client={client}
+        employeeMap={employeeMap}
+        settings={settings}
+        locale={locale}
+        state={state}
+        isTaxInvoice={isTaxInvoice}
+      />
 
+      {/* شبكة معلومات العميل وبيانات الفاتورة */}
+      <div className="my-6 grid grid-cols-1 gap-4 sm:grid-cols-2">
+        {/* بيانات العميل (Bill To) */}
+        <div className="rounded-2xl border border-slate-200/80 bg-slate-50/50 p-4 text-xs">
+          <div className="mb-2 flex items-center justify-between border-b border-slate-200 pb-2">
+            <span className="font-extrabold uppercase tracking-wider text-slate-400 text-[10px]">
+              فاتورة إلى • Billed To
+            </span>
+            <span className="rounded bg-slate-200/70 px-1.5 py-0.5 text-[10px] font-bold text-slate-600">
+              العميل
+            </span>
+          </div>
+
+          <h3 className="text-sm font-black text-slate-900">
+            {client?.name || invoice.clientName || 'عميل نقدي'}
+          </h3>
+
+          {client?.businessName && (
+            <p className="mt-0.5 font-bold text-brand-700 text-xs">
+              {client.businessName}
+            </p>
+          )}
+
+          <div className="mt-2.5 space-y-1 text-slate-600">
+            {client?.phone && (
+              <div className="flex items-center gap-1.5">
+                <span className="text-slate-400">الهاتف:</span>
+                <span className="num font-semibold text-slate-700" dir="ltr">{client.phone}</span>
+              </div>
+            )}
+            {client?.address && (
+              <div className="flex items-start gap-1.5">
+                <span className="shrink-0 text-slate-400">العنوان:</span>
+                <span className="text-slate-700">{client.address}</span>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* تفاصيل المستند والمواعيد والمسؤولين */}
+        <div className="rounded-2xl border border-slate-200/80 bg-slate-50/50 p-4 text-xs">
+          <div className="mb-2 flex items-center justify-between border-b border-slate-200 pb-2">
+            <span className="font-extrabold uppercase tracking-wider text-slate-400 text-[10px]">
+              بيانات المستند • Invoice Details
+            </span>
+            <span className="num font-mono font-bold text-slate-600">
+              #{invoice.number}
+            </span>
+          </div>
+
+          <div className="grid grid-cols-2 gap-x-3 gap-y-2">
+            <div>
+              <span className="block text-[10px] font-bold text-slate-400">تاريخ الإصدار:</span>
+              <span className="num font-bold text-slate-800">{formatDate(invoice.date, locale)}</span>
+            </div>
+
+            {invoice.nextPaymentDate && (
+              <div>
+                <span className="block text-[10px] font-bold text-slate-400">تاريخ الاستحقاق:</span>
+                <span className={`num font-bold ${remaining > 0 ? 'text-amber-700' : 'text-slate-800'}`}>
+                  {formatDate(invoice.nextPaymentDate, locale)}
+                </span>
+              </div>
+            )}
+
+            <div>
+              <span className="block text-[10px] font-bold text-slate-400">مسؤول المبيعات:</span>
+              <span className="font-semibold text-slate-800">
+                {invoice.responsibleEmployeeName || invoice.employeeName || (invoice.employeeId ? employeeMap?.get(invoice.employeeId)?.name : '—')}
+              </span>
+            </div>
+
+            <div>
+              <span className="block text-[10px] font-bold text-slate-400">المحاسب المسؤول:</span>
+              <span className="font-semibold text-slate-800">
+                {invoice.createdByName || invoice.accountantName || '—'}
+              </span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* جدول الخدمات والبنود */}
+      <div className="mb-6 overflow-hidden rounded-2xl border border-slate-200">
+        <table className="w-full table-fixed border-collapse text-xs">
+          <colgroup>
+            <col style={{ width: '8%' }} />
+            <col style={{ width: '44%' }} />
+            <col style={{ width: '18%' }} />
+            <col style={{ width: '12%' }} />
+            <col style={{ width: '18%' }} />
+          </colgroup>
+          <thead>
+            <tr className="bg-slate-900 text-white print:bg-slate-800 print:text-white">
+              <th className="py-3 px-2 text-center font-bold">#</th>
+              <th className="py-3 px-3 text-start font-bold">الخدمة والبيان / Description</th>
+              <th className="py-3 px-3 text-end font-bold">سعر الوحدة</th>
+              <th className="py-3 px-2 text-center font-bold">الكمية</th>
+              <th className="py-3 px-4 text-end font-bold">الإجمالي</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-slate-200/80">
+            {items.map((item, index) => (
+              <tr key={index} className="transition-colors even:bg-slate-50/50 hover:bg-slate-50/80">
+                <td className="py-3 px-2 text-center font-mono font-bold text-slate-400">
+                  {String(index + 1).padStart(2, '0')}
+                </td>
+                <td className="py-3 px-3 align-middle text-start">
+                  <div className="font-bold text-slate-800 text-sm">{item.name}</div>
+                  {item.isAdBudget && (
+                    <div className="mt-1">
+                      <span className="inline-flex items-center rounded-md bg-amber-50 px-2 py-0.5 text-[10px] font-extrabold text-amber-800 ring-1 ring-inset ring-amber-300/50">
+                        ميزانية إعلانات (عهدة منصات)
+                      </span>
+                    </div>
+                  )}
+                </td>
+                <td className="py-3 px-3 text-end font-semibold text-slate-600">
+                  <span className="num">{formatMoney(item.price)}</span>
+                </td>
+                <td className="py-3 px-2 text-center font-bold text-slate-800">
+                  <span className="num">{item.qty}</span>
+                </td>
+                <td className="py-3 px-4 text-end text-sm font-black text-slate-900">
+                  <span className="num">{formatMoney(item.total)}</span>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {/* القسم المالي وبيانات التحويل والملاحظات */}
+      <div className="mb-6 grid grid-cols-1 items-start gap-6 sm:grid-cols-2">
+        {/* العمود الجانبي: البنك + كود QR + الملاحظات */}
+        <div className="space-y-4">
+          {/* بيانات التحويل البنكي */}
+          {(settings.bankName || settings.bankAccount || settings.bankHolder) && (
+            <div className="rounded-2xl border border-slate-200/80 bg-slate-50/60 p-4 text-xs">
+              <div className="mb-2 flex items-center gap-2">
+                <span className="flex h-5 w-5 items-center justify-center rounded-full bg-slate-200 text-slate-700 text-[10px]">
+                  🏛️
+                </span>
+                <span className="font-extrabold uppercase tracking-wide text-slate-800 text-[11px]">
+                  بيانات التحويل البنكي • Bank Details
+                </span>
+              </div>
+
+              <div className="space-y-1.5 text-slate-600">
+                {settings.bankName && (
+                  <div>
+                    <span className="text-slate-400">اسم البنك: </span>
+                    <span className="font-bold text-slate-800">{settings.bankName}</span>
+                  </div>
+                )}
+                {settings.bankHolder && (
+                  <div>
+                    <span className="text-slate-400">اسم المستفيد: </span>
+                    <span className="font-bold text-slate-800">{settings.bankHolder}</span>
+                  </div>
+                )}
+                {settings.bankAccount && (
+                  <div className="mt-2 rounded-xl border border-slate-200 bg-white p-2.5">
+                    <span className="block text-[10px] font-bold text-slate-400">رقم الحساب / الآيبان (IBAN):</span>
+                    <span className="num mt-0.5 block font-mono text-xs font-black text-slate-900 select-all" dir="ltr">
+                      {settings.bankAccount}
+                    </span>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* الباركود وروابط التواصل */}
+          {settings.websiteUrl && (
+            <div className="flex items-center gap-3 rounded-2xl border border-slate-200/80 bg-slate-50/50 p-3">
+              <div className="shrink-0 rounded-xl bg-white p-1 border border-slate-200 shadow-2xs">
+                <QrImage value={settings.websiteUrl} size={68} />
+              </div>
+              <div>
+                <p className="text-xs font-bold text-slate-800">امسح الرمز للزيارة أو التحقق</p>
+                <p className="mt-0.5 text-[10px] text-slate-500">Scan QR Code for company website & verification</p>
+                <p className="num mt-1 text-[11px] font-bold text-brand-700 hover:underline" dir="ltr">
+                  {settings.websiteUrl}
+                </p>
+              </div>
+            </div>
+          )}
+
+          {/* ملاحظات خاصة بالفاتورة */}
+          {invoice.notes && (
+            <div className="rounded-2xl border border-amber-200/80 bg-amber-50/40 p-4 text-xs leading-relaxed text-amber-950">
+              <span className="block font-bold text-amber-900 mb-1">ملاحظات الفاتورة • Notes:</span>
+              <p className="whitespace-pre-wrap">{invoice.notes}</p>
+            </div>
+          )}
+        </div>
+
+        {/* صندوق الإجماليات التنفيذي */}
+        <div className="rounded-2xl border border-slate-200 bg-slate-50/70 p-5 shadow-2xs">
+          <h4 className="mb-3 border-b border-slate-200 pb-2 text-xs font-extrabold uppercase tracking-wider text-slate-500">
+            الملخص المالي • Financial Summary
+          </h4>
+
+          <div className="space-y-1.5 divide-y divide-slate-200/60">
+            {/* المجموع الفرعي */}
+            <div className="pt-1">
+              <TotalSummaryItem label={t('invoices.subtotal')} value={invoice.subtotal} />
+            </div>
+
+            {/* الخصم */}
+            {toNumber(invoice.discount) > 0 && (
+              <div className="pt-1.5">
+                <TotalSummaryItem
+                  label={
+                    invoice.discountMode === 'percent'
+                      ? `${t('invoices.discount')} (${toNumber(invoice.discountValue)}%)`
+                      : t('invoices.discount')
+                  }
+                  value={invoice.discount}
+                  tone="danger"
+                  isNegative
+                />
+              </div>
+            )}
+
+            {/* تفصيل الأتعاب وميزانية الإعلانات عند وجودها */}
+            {toNumber(invoice.adBudgetTotal) > 0 && (
+              <div className="pt-1.5 space-y-1">
+                <TotalSummaryItem label={t('invoices.feesTotal')} value={invoice.feesTotal} />
+                <TotalSummaryItem label={t('invoices.adBudgetTotal')} value={invoice.adBudgetTotal} />
+              </div>
+            )}
+
+            {/* الضريبة */}
+            {invoice.taxEnabled && (
+              <div className="pt-1.5">
+                <TotalSummaryItem
+                  label={`${taxLabelOf(settings, invoice.taxKind) || t('invoices.tax')} (${invoice.taxRate}%)`}
+                  value={invoice.taxAmount}
+                />
+              </div>
+            )}
+
+            {/* الإجمالي النهائي البارز */}
+            <div className="pt-3">
+              <div className="rounded-xl bg-slate-900 p-4 text-white shadow-sm print:bg-slate-900 print:text-white">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <span className="block text-[11px] font-bold uppercase tracking-wider text-slate-300">
+                      {t('invoices.total')}
+                    </span>
+                    <span className="text-[10px] text-slate-400">Total Net Amount</span>
+                  </div>
+                  <div className="num text-2xl font-black text-white">
+                    {formatMoney(invoice.total)}
+                    <span className="ms-1.5 text-xs font-semibold text-slate-300">{t('common.currency')}</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* حالة السداد: المدفوع والمتبقي */}
+            <div className="pt-3 space-y-2">
+              <div className="flex items-center justify-between rounded-xl bg-emerald-50/80 px-3.5 py-2 text-xs font-bold text-emerald-800 border border-emerald-200/60">
+                <span>المبلغ المسدد (Paid Amount):</span>
+                <span className="num font-black text-emerald-700">
+                  {formatMoney(invoice.paidAmount)} {t('common.currency')}
+                </span>
+              </div>
+
+              {remaining > 0 ? (
+                <div className="flex items-center justify-between rounded-xl bg-amber-50/80 px-3.5 py-2 text-xs font-bold text-amber-900 border border-amber-200/60">
+                  <span>المتبقي المستحق (Balance Due):</span>
+                  <span className="num font-black text-amber-700">
+                    {formatMoney(remaining)} {t('common.currency')}
+                  </span>
+                </div>
+              ) : (
+                <div className="flex items-center justify-between rounded-xl bg-slate-100 px-3.5 py-1.5 text-[11px] font-bold text-slate-700">
+                  <span>حالة الفاتورة:</span>
+                  <span className="text-emerald-700">تم سداد كامل القيمة بنجاح ✓</span>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* الشروط والتوقيعات والاعتماد */}
       <InvoiceFooter settings={settings} />
     </div>
   )
 }
 
-function PrintHeader({ invoice, client, employeeMap, settings, locale }) {
+function PrintHeader({ invoice, client, employeeMap, settings, locale, state, isTaxInvoice }) {
   const { t } = useI18n()
+
+  const statusLabel = {
+    paid: 'مدفوعة بالكامل • Paid',
+    partial: 'مدفوعة جزئياً • Partial',
+    unpaid: 'مستحقة الدفع • Due',
+    credit: 'رصيد دائن • Credit',
+  }[state] ?? state
+
+  const statusToneClasses = {
+    paid: 'bg-emerald-50 text-emerald-700 border-emerald-300/80',
+    partial: 'bg-amber-50 text-amber-700 border-amber-300/80',
+    unpaid: 'bg-rose-50 text-rose-700 border-rose-300/80',
+    credit: 'bg-sky-50 text-sky-700 border-sky-300/80',
+  }[state] ?? 'bg-slate-50 text-slate-700 border-slate-200'
+
   return (
-    <div className="mb-5 flex flex-wrap items-start justify-between gap-4 border-b border-slate-200 pb-4">
-      <div className="flex items-center gap-3">
-        {settings.logoUrl && (
-          <img src={settings.logoUrl} alt="" className="h-14 w-14 shrink-0 rounded-xl object-contain" />
-        )}
-        <div>
-          <p className="text-2xl font-extrabold lowercase tracking-tight text-slate-900" style={{ direction: 'ltr' }}>
-            {settings.companyName || 'iyora'}
-          </p>
-          <p className="text-xs text-slate-500">{settings.companyAddress || t('app.tagline')}</p>
-          {(settings.companyPhone || settings.companyEmail) && (
-            <p className="num text-xs text-slate-500" dir="ltr">
-              {[settings.companyPhone, settings.companyEmail].filter(Boolean).join(' · ')}
-            </p>
+    <div className="border-b-2 border-slate-200 pb-5">
+      <div className="flex flex-wrap items-start justify-between gap-6">
+        {/* هوية الشركة ومعلوماتها */}
+        <div className="flex items-start gap-4">
+          {settings.logoUrl ? (
+            <div className="flex h-16 w-20 shrink-0 items-center justify-center rounded-2xl border border-slate-200 bg-white p-1.5 shadow-2xs">
+              <img src={settings.logoUrl} alt={settings.companyName || 'logo'} className="h-full w-full object-contain" />
+            </div>
+          ) : (
+            <div className="flex h-16 w-16 shrink-0 items-center justify-center rounded-2xl bg-slate-900 font-black text-xl text-white shadow-2xs">
+              {(settings.companyName || 'IY').slice(0, 2).toUpperCase()}
+            </div>
           )}
+
+          <div>
+            <h1 className="text-2xl font-black tracking-tight text-slate-900" style={{ direction: 'ltr' }}>
+              {settings.companyName || 'iyora'}
+            </h1>
+            <p className="mt-0.5 text-xs font-semibold text-slate-500">
+              {settings.companyAddress || t('app.tagline')}
+            </p>
+            {(settings.companyPhone || settings.companyEmail) && (
+              <p className="num mt-1 text-xs text-slate-500" dir="ltr">
+                {[settings.companyPhone, settings.companyEmail].filter(Boolean).join(' • ')}
+              </p>
+            )}
+          </div>
         </div>
-      </div>
-      <div className="text-end">
-        <p className="num text-sm font-bold text-slate-900">{invoice.number}</p>
-        <p className="text-xs text-slate-500">{formatDate(invoice.date, locale)}</p>
-        {client && <p className="mt-1 text-sm font-semibold text-slate-700">{client.name}</p>}
-        {client?.phone && <p className="num text-xs text-slate-500">{client.phone}</p>}
-        {invoice.employeeId && employeeMap.get(invoice.employeeId) && (
-          <p className="text-xs text-slate-500">
-            {t('invoices.salesEmployee')}: {employeeMap.get(invoice.employeeId).name}
-          </p>
-        )}
-        {invoice.accountantName && (
-          <p className="text-xs text-slate-500">
-            {t('invoices.accountant')}: {invoice.accountantName}
-          </p>
-        )}
+
+        {/* عنوان المستند ورقمه وحالته */}
+        <div className="text-end">
+          <div className="inline-block text-end">
+            <h2 className="text-2xl font-black tracking-tight text-slate-900">
+              {isTaxInvoice ? 'فاتورة ضريبية' : 'فاتورة مبيعات'}
+            </h2>
+            <span className="block text-[10px] font-extrabold uppercase tracking-widest text-slate-400">
+              {isTaxInvoice ? 'TAX INVOICE' : 'SALES INVOICE'}
+            </span>
+          </div>
+
+          <div className="mt-2.5 flex items-center justify-end gap-2">
+            <div className="rounded-xl border border-slate-900 bg-slate-900 px-3.5 py-1 text-white shadow-2xs print:border print:border-slate-800">
+              <span className="text-[10px] text-slate-300 font-normal me-1.5">No.</span>
+              <span className="num font-mono font-black text-sm tracking-wider">
+                {invoice.number}
+              </span>
+            </div>
+
+            <div className={`rounded-xl border px-3 py-1 text-xs font-bold ${statusToneClasses}`}>
+              {statusLabel}
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   )
 }
 
-/** تذييل ثابت للفاتورة المطبوعة: حساب التحويل + شروط العقد (الـ QR فوق كتلة الضريبة) */
+/** تذييل الفاتورة: الشروط والأحكام ومساحة الاعتماد والتوقيعات الرسمية */
 function InvoiceFooter({ settings }) {
-  const { t } = useI18n()
-  const hasBank = settings.bankName || settings.bankAccount || settings.bankHolder
   const hasTerms = Boolean(settings.contractTerms?.trim())
 
-  if (!hasBank && !hasTerms) return null
-
   return (
-    <div className={`mt-6 border-t border-slate-200 pt-4 ${hasBank ? '' : 'hidden print:block'}`}>
-      {hasBank && (
-        <div className="text-sm">
-          <p className="mb-1 font-bold text-slate-900">{t('invoices.transferTo')}</p>
-          {settings.bankName && <p className="text-slate-600">{t('settings.bankName')}: {settings.bankName}</p>}
-          {settings.bankHolder && <p className="text-slate-600">{t('settings.bankHolder')}: {settings.bankHolder}</p>}
-          {settings.bankAccount && (
-            <p className="num text-slate-600" dir="ltr">{settings.bankAccount}</p>
-          )}
+    <div className="mt-8 border-t border-slate-200 pt-6">
+      {/* الشروط والأحكام إن وجدت */}
+      {hasTerms && (
+        <div className="mb-6 rounded-2xl border border-slate-200/80 bg-slate-50/50 p-4 text-xs">
+          <h5 className="mb-1.5 font-bold text-slate-900">الشروط والأحكام العامة • Terms & Conditions</h5>
+          <p className="whitespace-pre-wrap text-[11px] leading-relaxed text-slate-600">
+            {settings.contractTerms}
+          </p>
         </div>
       )}
 
-      {hasTerms && (
-        <div className="mt-4 hidden print:block">
-          <p className="mb-1 text-sm font-bold text-slate-900">{t('invoices.terms')}</p>
-          <p className="whitespace-pre-wrap text-xs leading-relaxed text-slate-600">{settings.contractTerms}</p>
+      {/* مساحة التوقيعات والاعتماد الرسمي */}
+      <div className="grid grid-cols-2 gap-8 text-center text-xs">
+        <div>
+          <p className="font-bold text-slate-700">توقيع المستلم / العميل</p>
+          <p className="text-[10px] text-slate-400">Customer Acceptance</p>
+          <div className="mt-10 mx-auto w-44 border-b border-dashed border-slate-300" />
         </div>
-      )}
+        <div>
+          <p className="font-bold text-slate-700">الختم والاعتماد الرسمي</p>
+          <p className="text-[10px] text-slate-400">Authorized Signature & Stamp</p>
+          <div className="mt-10 mx-auto w-44 border-b border-dashed border-slate-300" />
+        </div>
+      </div>
+
+      <div className="mt-8 border-t border-slate-100 pt-3 text-center text-[11px] font-semibold text-slate-400">
+        شكراً لتعاملكم معنا • Thank you for your business
+      </div>
     </div>
   )
 }

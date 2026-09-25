@@ -1,6 +1,6 @@
 import { useMemo } from 'react'
 import { COL, useAllPayments, useCollection, useSettings } from './db'
-import { ACCOUNTS_COL } from './accounts'
+import { ACCOUNTS_COL, buildCleanAccounts } from './accounts'
 import { JOURNAL_COL } from './journal'
 import { ASSETS_COL, ASSET_USAGE_COL, MAINTENANCE_COL } from './assets'
 import { JOB_COSTS_COL, VENDORS_COL } from '../pages/Vendors'
@@ -14,7 +14,7 @@ import { isWithin } from './format'
  */
 export function useAccountingData() {
   const { settings } = useSettings()
-  const { rows: accounts, loading } = useCollection(ACCOUNTS_COL, 'code', 'asc')
+  const { rows: rawAccounts, loading } = useCollection(ACCOUNTS_COL, 'code', 'asc')
   const { rows: invoices } = useCollection(COL.invoices, 'date', 'desc')
   const { rows: expenses } = useCollection(COL.expenses, 'date', 'desc')
   const { rows: expenseCategories } = useCollection(COL.expenseCategories, 'name', 'asc')
@@ -26,7 +26,16 @@ export function useAccountingData() {
   const { rows: assets } = useCollection(ASSETS_COL, 'name', 'asc')
   const { rows: maintenance } = useCollection(MAINTENANCE_COL, 'date', 'desc')
   const { rows: assetUsage } = useCollection(ASSET_USAGE_COL, 'date', 'desc')
+  const { rows: clients } = useCollection(COL.clients, 'name', 'asc')
+  const { rows: employees } = useCollection(COL.employees, 'name', 'asc')
+  const { rows: purchaseInvoices } = useCollection('purchaseInvoices', 'date', 'desc')
+  const { rows: vendorPayments } = useCollection('vendorPayments', 'date', 'desc')
   const { rows: accountingTransactions } = useCollection(COL.accountingTransactions, 'transactionDate', 'desc')
+
+  const accounts = useMemo(
+    () => buildCleanAccounts(rawAccounts, clients, employees, vendors),
+    [rawAccounts, clients, employees, vendors],
+  )
 
   const enrichedPayments = useMemo(() => {
     const numbers = new Map(invoices.map((invoice) => [invoice.id, invoice.number]))
@@ -49,6 +58,9 @@ export function useAccountingData() {
         maintenance,
         assetUsage,
         accountingTransactions,
+        clients,
+        purchaseInvoices,
+        vendorPayments,
         settings,
       }),
     [
@@ -65,15 +77,33 @@ export function useAccountingData() {
       maintenance,
       assetUsage,
       accountingTransactions,
+      clients,
+      purchaseInvoices,
+      vendorPayments,
       settings,
     ],
   )
 
   return {
-    accounts, invoices, expenses, expenseCategories, paymentMethods,
-    jobCosts, vendors, vouchers, assets, maintenance, assetUsage,
+    accounts,
+    rawAccounts,
+    invoices,
+    expenses,
+    expenseCategories,
+    paymentMethods,
+    jobCosts,
+    vendors,
+    vouchers,
+    assets,
+    maintenance,
+    assetUsage,
+    clients,
+    employees,
+    purchaseInvoices,
+    vendorPayments,
     accountingTransactions,
-    journal, loading,
+    journal,
+    loading,
   }
 }
 

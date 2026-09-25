@@ -69,9 +69,9 @@ function withExpectedCost(invoice, services) {
 }
 
 /** ينشئ تكلفة عمولة الموظف التلقائية على فاتورة أُنشئت للتو من عرض أو باقة */
-async function createCommissionFor(invoiceId, invoice, employees) {
+async function createCommissionFor(invoiceId, invoice, employees, monthInvoices = []) {
   const employee = employees.find((item) => item.id === invoice.employeeId)
-  const plan = planCommission({ invoice: { ...invoice, id: invoiceId }, employee, existing: null })
+  const plan = planCommission({ invoice: { ...invoice, id: invoiceId }, employee, existing: null, monthInvoices })
   if (plan.action === 'create') {
     await createDoc(JOB_COSTS_COL, { ...plan.data, invoiceId, clientId: invoice.clientId })
   }
@@ -160,13 +160,16 @@ function QuotesTab() {
   async function convert(quote) {
     setBusy(true)
     const number = await nextInvoiceNumber(settings.invoicePrefix)
+    const client = clients.find((c) => c.id === quote.clientId)
+    const effectiveEmployeeId = quote.employeeId || client?.employeeId || null
+    const employee = employees.find((e) => e.id === effectiveEmployeeId)
 
     const invoice = withExpectedCost({
       number,
       clientId: quote.clientId,
       clientName: quote.clientName,
-      employeeId: quote.employeeId ?? null,
-      employeeName: quote.employeeName ?? '',
+      employeeId: effectiveEmployeeId,
+      employeeName: quote.employeeName || employee?.name || '',
       date: todayISO(),
       items: quote.items ?? [],
       subtotal: quote.subtotal,
@@ -189,7 +192,7 @@ function QuotesTab() {
     const createdId = result.invoiceId
 
     await updateDocById(QUOTATIONS_COL, quote.id, { status: 'converted', invoiceId: createdId })
-    await createCommissionFor(createdId, invoice, employees)
+    await createCommissionFor(createdId, invoice, employees, invoices)
     await recalcClientTotals(quote.clientId, [...invoices, { ...invoice, id: createdId }])
 
     setBusy(false)
@@ -615,12 +618,16 @@ function RetainersTab() {
       const number = await nextInvoiceNumber(settings.invoicePrefix)
       const day = String(Math.min(28, Math.max(1, toNumber(retainer.dayOfMonth) || 1))).padStart(2, '0')
 
+      const client = clients.find((c) => c.id === retainer.clientId)
+      const effectiveEmployeeId = retainer.employeeId || client?.employeeId || null
+      const employee = employees.find((e) => e.id === effectiveEmployeeId)
+
       const invoice = withExpectedCost({
         number,
         clientId: retainer.clientId,
         clientName: retainer.clientName,
-        employeeId: retainer.employeeId ?? null,
-        employeeName: retainer.employeeName ?? '',
+        employeeId: effectiveEmployeeId,
+        employeeName: retainer.employeeName || employee?.name || '',
         date: `${month}-${day}`,
         items: retainer.items ?? [],
         subtotal: retainer.subtotal,
@@ -642,7 +649,7 @@ function RetainersTab() {
       const result = await createInvoiceClientSide({ values: invoice, number })
       const docId = result.invoiceId
       await updateDocById(RETAINERS_COL, retainer.id, { lastGeneratedMonth: month })
-      await createCommissionFor(docId, invoice, employees)
+      await createCommissionFor(docId, invoice, employees, invoices)
       created.push({ ...invoice, id: docId })
       await recalcClientTotals(retainer.clientId, [...invoices, { ...invoice, id: docId }])
     }

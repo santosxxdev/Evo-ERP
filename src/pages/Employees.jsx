@@ -42,6 +42,13 @@ import { JOB_COSTS_COL } from './Vendors'
 import PrintDocument from '../components/PrintDocument'
 import ReportPrintHeader from '../components/ReportPrintHeader'
 import {
+  IconPrinter,
+  IconDocumentText,
+  IconTarget,
+  IconBuilding,
+  IconVouchers,
+} from '../components/Icons'
+import {
   Badge,
   Button,
   ConfirmDialog,
@@ -74,9 +81,9 @@ function signedAmount(type, amount) {
 /**
  * كشف شهري احترافي: كل شهر لوحده — مرتب، بونص، خصم، عمولة (لو موظف
  * مبيعات)، وحالة الصرف. يجمع بين حركات كشف الموظف اليدوية وعمولاته
- * التلقائية من الفواتير في صف واحد لكل شهر.
+ * التلقائية من الفواتير وسندات الصرف والقبض والخصم في صف واحد لكل شهر.
  */
-function buildMonthlyStatement(entries, commissionRows, jobPayRows = [], bonusRows = []) {
+function buildMonthlyStatement(entries, commissionRows, jobPayRows = [], bonusRows = [], voucherRows = []) {
   const months = new Map()
   const ensure = (key) =>
     months.get(key) ??
@@ -102,6 +109,35 @@ function buildMonthlyStatement(entries, commissionRows, jobPayRows = [], bonusRo
     row[entry.type] = (row[entry.type] ?? 0) + amount
     if (entry.paid) row.paid += signedAmount(entry.type, amount)
     else row.due += signedAmount(entry.type, amount)
+    months.set(key, row)
+  }
+
+  for (const vRow of voucherRows) {
+    const key = monthKey(vRow.date)
+    if (!key) continue
+    const row = ensure(key)
+    const debit = toNumber(vRow.debit)
+    const credit = toNumber(vRow.credit)
+
+    const isDeduction = vRow.kind === 'deduction' || vRow.voucherType === 'deduction'
+    const isBonus = vRow.kind === 'bonus' || (vRow.voucherType === 'manual' && credit > 0 && !vRow.isAdvance)
+    const isPayment = vRow.voucherType === 'payment' || vRow.kind === 'payment'
+
+    if (isDeduction) {
+      const amt = debit > 0 ? debit : credit
+      row.deduction += amt
+      row.due -= amt
+    } else if (isBonus) {
+      const amt = credit > 0 ? credit : debit
+      row.bonus += amt
+      row.due += amt
+    } else if (isPayment) {
+      const amt = debit > 0 ? debit : credit
+      row.paid += amt
+      if (!vRow.isAdvance) {
+        row.due -= amt
+      }
+    }
     months.set(key, row)
   }
 
@@ -187,6 +223,7 @@ export default function Employees() {
   const { rows: departments } = useCollection(COL.departments, 'name', 'asc')
   const { rows: positions } = useCollection(COL.positions, 'name', 'asc')
   const { rows: accounts } = useCollection(COL.accounts, 'code', 'asc')
+  const { rows: allVouchers } = useCollection(COL.vouchers, 'date', 'desc')
   const { rows: accountingTxs } = useCollection(COL.accountingTransactions, 'transactionDate', 'desc')
 
   const navigate = useNavigate()
@@ -333,8 +370,20 @@ export default function Employees() {
       if (entry.paid) stat.netPaid += signedAmount(entry.type, entry.amount)
       map.set(entry.employeeId, stat)
     }
+    for (const voucher of allVouchers || []) {
+      for (const line of voucher.lines || []) {
+        if (line.subLedgerType === 'employee' && line.subLedgerId) {
+          const empId = String(line.subLedgerId).replace(/^emp-(payable|advance)-/, '')
+          const stat = ensure(empId)
+          if (voucher.type === 'payment' && toNumber(line.debit) > 0) {
+            stat.netPaid += toNumber(line.debit)
+          }
+          map.set(empId, stat)
+        }
+      }
+    }
     return map
-  }, [clients, invoices, entries])
+  }, [clients, invoices, entries, allVouchers])
 
   const filtered = useMemo(() => {
     const term = search.trim().toLowerCase()
@@ -419,16 +468,6 @@ export default function Employees() {
     <div>
       <PageHeader title={t('employees.title')} subtitle={t('employees.subtitle')}>
         <div className="flex flex-wrap gap-2">
-          {canModify && (
-            <>
-              <Button onClick={handleClearDemo} disabled={clearing || seeding} variant="danger">
-                {clearing ? 'جاري الحذف...' : 'حذف البيانات التجريبية'}
-              </Button>
-              <Button onClick={handleSeedDemo} disabled={seeding || clearing} variant="secondary">
-                {seeding ? 'جاري التوليد...' : 'توليد بيانات تجريبية'}
-              </Button>
-            </>
-          )}
           <Button onClick={() => setEditing({})}>+ {t('employees.add')}</Button>
         </div>
       </PageHeader>
@@ -597,6 +636,8 @@ export default function Employees() {
           (expense) => expense.target?.kind === 'employee' && expense.target.id === viewing?.id,
         )}
         invoices={invoices}
+        allVouchers={allVouchers}
+        accounts={accounts}
         locale={locale}
         onClose={() => setViewing(null)}
       />
@@ -637,6 +678,7 @@ function EmployeeForm({ open, row, departments = [], positions = [], customEmplo
       hireDate: row?.hireDate ?? '',
       userId: row?.userId ?? '',
       baseSalary: row?.baseSalary ?? '',
+      commissionSource: row?.commissionSource ?? (row?.commissionRate ? 'custom' : 'department'),
       commissionRate: row?.commissionRate ?? '',
       targetAmount: row?.targetAmount ?? '',
       requireTargetForCommission: Boolean(row?.requireTargetForCommission),
@@ -675,6 +717,7 @@ function EmployeeForm({ open, row, departments = [], positions = [], customEmplo
       hireDate: form.hireDate || null,
       userId: form.userId?.trim() || null,
       baseSalary: toNumber(form.baseSalary),
+      commissionSource: form.commissionSource || 'custom',
       commissionRate: toNumber(form.commissionRate),
       targetAmount: toNumber(form.targetAmount),
       requireTargetForCommission: Boolean(form.requireTargetForCommission),
@@ -785,69 +828,137 @@ function EmployeeForm({ open, row, departments = [], positions = [], customEmplo
 
           {/* قسم الشرايح والتارجت والعمولات */}
           <div className="rounded-2xl border border-sky-200 bg-sky-50/40 p-4 sm:col-span-2 space-y-4">
-            <h4 className="text-sm font-bold text-sky-950 flex items-center gap-2">
-              <span>🎯</span> {t('employees.commissionTierSummary')}
-            </h4>
-            <div className="grid gap-4 sm:grid-cols-2">
-              <Field label={t('employees.commissionRate')} hint={t('employees.commissionHint')}>
-                <Input
-                  numeric
-                  value={form.commissionRate ?? ''}
-                  onChange={(event) => set('commissionRate', event.target.value)}
-                  placeholder="20"
-                />
-              </Field>
-              <Field label={t('employees.targetAmount')} hint={t('employees.targetAmountHint')}>
-                <Input
-                  numeric
-                  value={form.targetAmount ?? ''}
-                  onChange={(event) => set('targetAmount', event.target.value)}
-                  placeholder="50000"
-                />
-              </Field>
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-sky-200/60 pb-3">
+              <h4 className="text-sm font-bold text-sky-950 flex items-center gap-2">
+                <IconTarget className="w-4 h-4 text-sky-600 inline" /> {t('employees.commissionTierSummary')}
+              </h4>
+
+              {/* اختيار مصدر العمولة: وراثة من القسم أو تخصيص فردي */}
+              <div className="flex items-center gap-4 text-xs font-semibold">
+                <label className="flex items-center gap-1.5 cursor-pointer text-slate-700">
+                  <input
+                    type="radio"
+                    name="commissionSource"
+                    value="department"
+                    checked={form.commissionSource === 'department'}
+                    onChange={() => set('commissionSource', 'department')}
+                    className="accent-sky-600"
+                  />
+                  <span>{t('commissions.source.department')}</span>
+                </label>
+                <label className="flex items-center gap-1.5 cursor-pointer text-slate-700">
+                  <input
+                    type="radio"
+                    name="commissionSource"
+                    value="custom"
+                    checked={form.commissionSource !== 'department'}
+                    onChange={() => set('commissionSource', 'custom')}
+                    className="accent-sky-600"
+                  />
+                  <span>{t('commissions.source.custom')}</span>
+                </label>
+              </div>
             </div>
 
-            {toNumber(form.targetAmount) > 0 && (
-              <div className="space-y-3 pt-3 border-t border-sky-200/60">
-                <label className="flex items-start gap-3 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={Boolean(form.requireTargetForCommission)}
-                    onChange={(event) => set('requireTargetForCommission', event.target.checked)}
-                    className="mt-0.5 h-4 w-4 accent-sky-600 rounded"
-                  />
-                  <span>
-                    <span className="block text-sm font-semibold text-slate-800">{t('employees.requireTargetForCommission')}</span>
-                    <span className="mt-0.5 block text-xs text-slate-500">{t('employees.requireTargetHint')}</span>
-                  </span>
-                </label>
+            {/* في حالة وراثة القسم: عرض إعدادات القسم الحالية */}
+            {form.commissionSource === 'department' ? (
+              (() => {
+                const currentDept = departments.find((d) => d.id === form.departmentId)
+                if (!currentDept) {
+                  return (
+                    <div className="rounded-xl bg-amber-50 border border-amber-200 p-3 text-xs text-amber-800">
+                      يرجى اختيار القسم للموظف أولاً لتطبيق إعدادات العمولة الخاصة به.
+                    </div>
+                  )
+                }
+                if (!currentDept.commissionEnabled) {
+                  return (
+                    <div className="rounded-xl bg-slate-100 border border-slate-200 p-3 text-xs text-slate-600">
+                      قسم «{currentDept.name}» لا يعمل بنظام العمولة حالياً.
+                    </div>
+                  )
+                }
+                return (
+                  <div className="rounded-xl bg-sky-100/60 border border-sky-200 p-3 text-xs text-sky-900 space-y-1.5">
+                    <p className="font-bold flex items-center gap-1">
+                      <span>إعدادات موروثة من قسم «{currentDept.name}»:</span>
+                    </p>
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 pt-1">
+                      <div>نسبة العمولة: <strong className="num text-sky-800">{currentDept.commissionRate || 0}%</strong></div>
+                      <div>التارجت: <strong className="num text-slate-800">{formatMoney(currentDept.targetAmount || 0)}</strong></div>
+                      {currentDept.overTargetCommissionEnabled && (
+                        <div>فوق التارجت: <strong className="num text-emerald-800">{currentDept.overTargetCommissionRate || 0}%</strong></div>
+                      )}
+                      <div>شرط التارجت: <strong>{currentDept.requireTargetForCommission ? 'نعم' : 'لا'}</strong></div>
+                    </div>
+                  </div>
+                )
+              })()
+            ) : (
+              /* في حالة التخصيص الفردي للموظف */
+              <>
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <Field label={t('employees.commissionRate')} hint={t('employees.commissionHint')}>
+                    <Input
+                      numeric
+                      value={form.commissionRate ?? ''}
+                      onChange={(event) => set('commissionRate', event.target.value)}
+                      placeholder="20"
+                    />
+                  </Field>
+                  <Field label={t('employees.targetAmount')} hint={t('employees.targetAmountHint')}>
+                    <Input
+                      numeric
+                      value={form.targetAmount ?? ''}
+                      onChange={(event) => set('targetAmount', event.target.value)}
+                      placeholder="50000"
+                    />
+                  </Field>
+                </div>
 
-                <label className="flex items-start gap-3 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={Boolean(form.overTargetCommissionEnabled)}
-                    onChange={(event) => set('overTargetCommissionEnabled', event.target.checked)}
-                    className="mt-0.5 h-4 w-4 accent-sky-600 rounded"
-                  />
-                  <span>
-                    <span className="block text-sm font-semibold text-slate-800">{t('employees.overTargetEnable')}</span>
-                    <span className="mt-0.5 block text-xs text-slate-500">{t('employees.overTargetHint')}</span>
-                  </span>
-                </label>
-
-                {form.overTargetCommissionEnabled && (
-                  <div className="pt-2 sm:w-1/2">
-                    <Field label={t('employees.overTargetCommissionRate')}>
-                      <Input
-                        numeric
-                        value={form.overTargetCommissionRate ?? ''}
-                        onChange={(event) => set('overTargetCommissionRate', event.target.value)}
-                        placeholder="10"
+                {toNumber(form.targetAmount) > 0 && (
+                  <div className="space-y-3 pt-3 border-t border-sky-200/60">
+                    <label className="flex items-start gap-3 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={Boolean(form.requireTargetForCommission)}
+                        onChange={(event) => set('requireTargetForCommission', event.target.checked)}
+                        className="mt-0.5 h-4 w-4 accent-sky-600 rounded"
                       />
-                    </Field>
+                      <span>
+                        <span className="block text-sm font-semibold text-slate-800">{t('employees.requireTargetForCommission')}</span>
+                        <span className="mt-0.5 block text-xs text-slate-500">{t('employees.requireTargetHint')}</span>
+                      </span>
+                    </label>
+
+                    <label className="flex items-start gap-3 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={Boolean(form.overTargetCommissionEnabled)}
+                        onChange={(event) => set('overTargetCommissionEnabled', event.target.checked)}
+                        className="mt-0.5 h-4 w-4 accent-sky-600 rounded"
+                      />
+                      <span>
+                        <span className="block text-sm font-semibold text-slate-800">{t('employees.overTargetEnable')}</span>
+                        <span className="mt-0.5 block text-xs text-slate-500">{t('employees.overTargetHint')}</span>
+                      </span>
+                    </label>
+
+                    {form.overTargetCommissionEnabled && (
+                      <div className="pt-2 sm:w-1/2">
+                        <Field label={t('employees.overTargetCommissionRate')}>
+                          <Input
+                            numeric
+                            value={form.overTargetCommissionRate ?? ''}
+                            onChange={(event) => set('overTargetCommissionRate', event.target.value)}
+                            placeholder="10"
+                          />
+                        </Field>
+                      </div>
+                    )}
                   </div>
                 )}
-              </div>
+              </>
             )}
           </div>
 
@@ -903,21 +1014,96 @@ function EmployeeForm({ open, row, departments = [], positions = [], customEmplo
 
 /* ------------------------------------------------------------------ */
 
-function EmployeeProfile({ open, employee, entries, clients, stat, expenseCategories, linkedExpenses = [], jobCosts = [], invoices = [], locale, onClose }) {
+function EmployeeProfile({
+  open,
+  employee,
+  entries,
+  clients,
+  stat,
+  expenseCategories,
+  linkedExpenses = [],
+  jobCosts = [],
+  invoices = [],
+  allVouchers = [],
+  accounts = [],
+  locale,
+  onClose,
+}) {
   const { t } = useI18n()
   const [adding, setAdding] = useState(false)
   const [busy, setBusy] = useState(false)
   const [removing, setRemoving] = useState(null)
   const [selectedMonthReport, setSelectedMonthReport] = useState(null)
 
-  if (!employee) return null
+  const employeeVouchers = useMemo(() => {
+    if (!employee?.id) return []
+    const list = []
+    for (const v of allVouchers || []) {
+      for (const l of v.lines || []) {
+        const isEmp =
+          (l.subLedgerType === 'employee' && (
+            l.subLedgerId === employee.id ||
+            l.subLedgerId === `emp-payable-${employee.id}` ||
+            l.subLedgerId === `emp-advance-${employee.id}` ||
+            String(l.subLedgerId).replace(/^emp-(payable|advance)-/, '') === employee.id
+          )) ||
+          l.employeeId === employee.id ||
+          (l.subLedgerName && l.subLedgerName.trim() === employee.name?.trim())
 
-  const commission = employeeCommission(employee.id, jobCosts)
-  const jobPay = employeeJobPay(employee.id, jobCosts)
+        if (isEmp) {
+          const acc = accounts?.find((a) => a.id === l.accountId)
+          const isAdvance = acc?.code === '110203' || String(acc?.code).startsWith('110203') || l.subLedgerId === `emp-advance-${employee.id}`
+          const isPayable = acc?.code === '210201' || String(acc?.code).startsWith('210201') || l.subLedgerId === `emp-payable-${employee.id}`
+
+          let kind = v.type
+          const desc = (l.description || v.description || v.notes || '').toLowerCase()
+          if (v.type === 'payment') kind = 'payment'
+          else if (v.type === 'receipt') kind = 'receipt'
+          else if (v.type === 'deduction' || desc.includes('خصم') || desc.includes('جزاء')) kind = 'deduction'
+          else if (desc.includes('بونص') || desc.includes('مكافأة') || desc.includes('زيادة')) kind = 'bonus'
+
+          list.push({
+            id: `v-${v.id}-${list.length}`,
+            voucherId: v.id,
+            date: v.date,
+            voucherNumber: v.number || '—',
+            voucherType: v.type,
+            kind,
+            isAdvance,
+            isPayable,
+            accountId: l.accountId,
+            accountName: acc?.name || (isAdvance ? 'سلف وعهد' : isPayable ? 'مستحقات موظف' : 'حساب'),
+            accountCode: acc?.code || (isAdvance ? '110203' : isPayable ? '210201' : ''),
+            debit: toNumber(l.debit),
+            credit: toNumber(l.credit),
+            description: l.description || v.description || v.notes || '',
+          })
+        }
+      }
+    }
+    return list.sort((a, b) => (b.date || '').localeCompare(a.date || ''))
+  }, [allVouchers, employee, accounts])
+
+  const advanceBalance = useMemo(() => {
+    let debits = 0
+    let credits = 0
+    for (const v of employeeVouchers) {
+      if (v.isAdvance) {
+        debits += v.debit
+        credits += v.credit
+      }
+    }
+    return Math.max(0, round2(debits - credits))
+  }, [employeeVouchers])
+
+  const commission = employeeCommission(employee?.id, jobCosts, invoices)
+  const jobPay = employeeJobPay(employee?.id, jobCosts, invoices)
   const bonusRows = targetBonusRows(employee, invoices)
   const bonusDue = bonusRows.reduce((sum, row) => sum + toNumber(row.earned), 0)
-  const monthly = buildMonthlyStatement(entries, commission.rows, jobPay.rows, bonusRows)
+  const monthly = buildMonthlyStatement(entries, commission.rows, jobPay.rows, bonusRows, employeeVouchers)
   const tierBreakdowns = monthlyEmployeeTierBreakdowns(employee, invoices)
+
+  if (!employee) return null
 
   async function toggleJobPayPaid(cost) {
     await updateDocById(JOB_COSTS_COL, cost.id, { paid: !cost.paid, paidDate: cost.paid ? null : todayISO() })
@@ -1009,7 +1195,11 @@ function EmployeeProfile({ open, employee, entries, clients, stat, expenseCatego
       <Modal open={open} onClose={onClose} wide title={`${t('employees.profile')} — ${employee.name}`}>
         <div className="mb-6 grid gap-3 sm:grid-cols-4">
           <Tile label={t('employees.clientsCount')} value={stat?.clients ?? 0} plain />
-          <Tile label={t('employees.closedClients')} value={stat?.closedClients?.size ?? 0} plain />
+          <Tile
+            label="سلف وعهد قائمة"
+            value={formatMoney(advanceBalance)}
+            tone={advanceBalance > 0 ? 'text-amber-600' : 'text-slate-900'}
+          />
           <Tile label={t('employees.broughtIn')} value={stat?.broughtIn ?? 0} tone="text-emerald-600" />
           <Tile label={t('employees.netPaid')} value={stat?.netPaid ?? 0} tone="text-rose-600" />
         </div>
@@ -1031,7 +1221,7 @@ function EmployeeProfile({ open, employee, entries, clients, stat, expenseCatego
           <div className="mb-6 rounded-2xl border border-sky-100 bg-sky-50/50 p-4">
             <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
               <h4 className="text-sm font-bold text-sky-950 flex items-center gap-2">
-                <span>🎯</span> {t('employees.commissionTierSummary')}
+                <IconTarget className="w-4 h-4 text-sky-600 inline" /> {t('employees.commissionTierSummary')}
               </h4>
               <div className="flex flex-wrap items-center gap-2 text-xs font-medium text-slate-600">
                 <span>العمولة الأساسية: <strong className="text-sky-700">{employee.commissionRate || 0}%</strong></span>
@@ -1175,16 +1365,101 @@ function EmployeeProfile({ open, employee, entries, clients, stat, expenseCatego
                       <button
                         type="button"
                         onClick={() => setSelectedMonthReport(row.month)}
-                        className="inline-flex items-center gap-1 whitespace-nowrap rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-xs font-bold text-slate-700 hover:border-brand-300 hover:bg-brand-50 hover:text-brand-700 transition"
+                        className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-xs font-bold text-slate-700 hover:border-brand-300 hover:bg-brand-50 hover:text-brand-700 transition"
                         title="عرض تقرير وتفاصيل كشف حساب الشهر بالكامل"
                       >
-                        <span>📄</span> التقرير المفصّل
+                        <IconDocumentText className="w-3.5 h-3.5 text-brand-600 inline" /> التقرير المفصّل
                       </button>
                     </Td>
                   </tr>
                 ))}
               </tbody>
             </table>
+          </div>
+        )}
+
+        {employeeVouchers.length > 0 && (
+          <div className="mb-6">
+            <div className="mb-2 flex items-center justify-between">
+              <h4 className="text-sm font-bold text-slate-900 flex items-center gap-1.5">
+                <IconVouchers className="w-4 h-4 text-brand-600 inline" /> سندات ومعاملات الموظف (سندات الصرف، القبض، الخصم، والقيود)
+              </h4>
+              <span className="text-xs text-slate-500 font-semibold">
+                {employeeVouchers.length} سند مسجل
+              </span>
+            </div>
+            <div className="overflow-x-auto rounded-xl border border-slate-200">
+              <table className="w-full min-w-[700px] text-sm">
+                <thead>
+                  <tr className="bg-slate-50 border-b border-slate-200">
+                    <Th>{t('common.date')}</Th>
+                    <Th>نوع السند</Th>
+                    <Th>{t('acct.reference')}</Th>
+                    <Th>الحساب المتأثر</Th>
+                    <Th>{t('common.description')}</Th>
+                    <Th>{t('acct.debit')}</Th>
+                    <Th>{t('acct.credit')}</Th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {employeeVouchers.map((v) => {
+                    const isPay = v.voucherType === 'payment'
+                    const isRec = v.voucherType === 'receipt'
+                    const isDed = v.kind === 'deduction' || v.voucherType === 'deduction'
+                    const isBon = v.kind === 'bonus'
+                    return (
+                      <tr key={v.id} className="hover:bg-slate-50/60">
+                        <Td className="whitespace-nowrap text-slate-600">{formatDate(v.date, locale)}</Td>
+                        <Td>
+                          <Badge
+                            tone={
+                              isDed
+                                ? 'red'
+                                : isBon
+                                  ? 'green'
+                                  : isPay
+                                    ? 'amber'
+                                    : isRec
+                                      ? 'sky'
+                                      : 'brand'
+                            }
+                          >
+                            {isPay
+                              ? 'سند صرف'
+                              : isRec
+                                ? 'سند قبض'
+                                : isDed
+                                  ? 'سند خصم'
+                                  : isBon
+                                    ? 'زيادة / بونص'
+                                    : 'سند قيد'}
+                          </Badge>
+                        </Td>
+                        <Td>
+                          <span className="num font-bold text-slate-700">{v.voucherNumber}</span>
+                        </Td>
+                        <Td>
+                          <span className="text-xs text-slate-600 font-medium">
+                            {v.accountCode} - {v.accountName}
+                          </span>
+                        </Td>
+                        <Td className="text-slate-700">{v.description || '—'}</Td>
+                        <Td>
+                          <span className="num font-bold text-slate-800">
+                            {v.debit > 0 ? formatMoney(v.debit) : '—'}
+                          </span>
+                        </Td>
+                        <Td>
+                          <span className="num font-bold text-slate-800">
+                            {v.credit > 0 ? formatMoney(v.credit) : '—'}
+                          </span>
+                        </Td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
           </div>
         )}
 
@@ -1360,6 +1635,7 @@ function EmployeeProfile({ open, employee, entries, clients, stat, expenseCatego
         entries={entries}
         jobCosts={jobCosts}
         invoices={invoices}
+        vouchers={employeeVouchers}
         locale={locale}
         onClose={() => setSelectedMonthReport(null)}
       />
@@ -1367,14 +1643,24 @@ function EmployeeProfile({ open, employee, entries, clients, stat, expenseCatego
   )
 }
 
-function EmployeeDetailedMonthReportModal({ open, employee, month, entries, jobCosts, invoices, locale, onClose }) {
+function EmployeeDetailedMonthReportModal({
+  open,
+  employee,
+  month,
+  entries,
+  jobCosts,
+  invoices,
+  vouchers = [],
+  locale,
+  onClose,
+}) {
   const { t } = useI18n()
   const [printing, setPrinting] = useState(false)
 
   const report = useMemo(() => {
     if (!open || !employee || !month) return null
-    return buildDetailedEmployeeMonthReport({ employee, month, entries, jobCosts, invoices })
-  }, [open, employee, month, entries, jobCosts, invoices])
+    return buildDetailedEmployeeMonthReport({ employee, month, entries, jobCosts, invoices, vouchers })
+  }, [open, employee, month, entries, jobCosts, invoices, vouchers])
 
   if (!open || !report) return null
 
@@ -1395,8 +1681,8 @@ function EmployeeDetailedMonthReportModal({ open, employee, month, entries, jobC
             <span className="num text-base font-black text-slate-900">{month}</span>
           </div>
           <div className="flex gap-2">
-            <Button variant="soft" onClick={handlePrint}>
-              🖨️ طباعة تقرير كشف الحساب
+            <Button variant="soft" onClick={handlePrint} className="flex items-center gap-1.5">
+              <IconPrinter className="w-4 h-4 inline" /> طباعة تقرير كشف الحساب
             </Button>
             <Button variant="ghost" onClick={onClose}>
               إغلاق
@@ -1448,7 +1734,9 @@ function EmployeeDetailedMonthReportModal({ open, employee, month, entries, jobC
         {/* 2. تحليل الشرايح والعمولات لشهر التقرير */}
         {(employee.targetAmount > 0 || employee.commissionRate > 0) && (
           <div className="mb-6 rounded-2xl border border-slate-200 bg-white p-4">
-            <h4 className="text-sm font-bold text-slate-900 mb-2">🎯 ملخص تارجت وشرايح عمولات الشهر ({month})</h4>
+            <h4 className="text-sm font-bold text-slate-900 mb-2 flex items-center gap-1.5">
+              <IconTarget className="w-4 h-4 text-sky-600 inline" /> ملخص تارجت وشرايح عمولات الشهر ({month})
+            </h4>
             <div className="grid gap-3 sm:grid-cols-4 text-xs">
               <div className="rounded-xl bg-slate-50 p-2.5">
                 <span className="text-slate-500 block">المبيعات المحققة</span>
@@ -1475,17 +1763,19 @@ function EmployeeDetailedMonthReportModal({ open, employee, month, entries, jobC
         {/* 2.5 إجراءات المحاسبة والترحيل لـ GL */}
         <div className="mb-6 rounded-2xl border border-indigo-200 bg-indigo-50/50 p-4">
           <h4 className="text-sm font-bold text-indigo-950 mb-2 flex items-center justify-between">
-            <span>🏛️ قيود اليومية وتأكيد الترحيل لـ GL ({month})</span>
+            <span className="flex items-center gap-1.5">
+              <IconBuilding className="w-4 h-4 text-indigo-700 inline" /> قيود اليومية وتأكيد الترحيل لـ GL ({month})
+            </span>
             {postingState.busy && <span className="text-xs text-indigo-700 font-normal">جاري المعالجة...</span>}
           </h4>
           {postingState.msg && (
             <div className="mb-3 rounded-xl bg-emerald-100 p-2.5 text-xs font-bold text-emerald-800 border border-emerald-300">
-              ✓ {postingState.msg}
+              {postingState.msg}
             </div>
           )}
           {postingState.err && (
             <div className="mb-3 rounded-xl bg-rose-100 p-2.5 text-xs font-bold text-rose-800 border border-rose-300">
-              ✖ {postingState.err}
+              {postingState.err}
             </div>
           )}
           <div className="grid gap-3 sm:grid-cols-3 text-xs">
@@ -1575,7 +1865,9 @@ function EmployeeDetailedMonthReportModal({ open, employee, month, entries, jobC
         </div>
 
         {/* 3. سجل الحركات والقيود التفصيلي للشهر */}
-        <h4 className="text-sm font-bold text-slate-900 mb-2">📋 سجل الحركات والقيود التفصيلي للشهر ({report.movementRows.length} حركة)</h4>
+        <h4 className="text-sm font-bold text-slate-900 mb-2 flex items-center gap-1.5">
+          <IconDocumentText className="w-4 h-4 text-brand-600 inline" /> سجل الحركات والقيود التفصيلي للشهر ({report.movementRows.length} حركة)
+        </h4>
         {report.movementRows.length === 0 ? (
           <p className="text-xs text-slate-500 bg-slate-50 p-4 rounded-xl text-center">لا توجد حركات مسجلة لهذا الشهر.</p>
         ) : (
@@ -2253,7 +2545,7 @@ function EmployeeMigrationModal({ open, employees = [], onClose }) {
 
         {successMsg && (
           <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-sm font-semibold text-emerald-800">
-            ✅ {successMsg}
+            {successMsg}
           </div>
         )}
 
@@ -2264,7 +2556,7 @@ function EmployeeMigrationModal({ open, employees = [], onClose }) {
 
           {unnumberedItems.length === 0 ? (
             <div className="text-center py-6 text-sm text-emerald-600 font-semibold">
-              🎉 جميع الموظفين مكوَّدون ومُعرَّفون بحالاتهم التشغيلية بالفعل. لا يوجد عمل متبقٍ.
+              جميع الموظفين مكوَّدون ومُعرَّفون بحالاتهم التشغيلية بالفعل. لا يوجد عمل متبقٍ.
             </div>
           ) : (
             <div className="divide-y divide-slate-100 max-h-72 overflow-y-auto">

@@ -31,6 +31,14 @@ export default function Departments() {
   const [busy, setBusy] = useState(false)
   const [search, setSearch] = useState('')
 
+  // Commission settings
+  const [commissionEnabled, setCommissionEnabled] = useState(false)
+  const [commissionRate, setCommissionRate] = useState('')
+  const [targetAmount, setTargetAmount] = useState('')
+  const [requireTarget, setRequireTarget] = useState(false)
+  const [overTargetEnabled, setOverTargetEnabled] = useState(false)
+  const [overTargetRate, setOverTargetRate] = useState('')
+
   const filteredDepartments = useMemo(() => {
     return departments.filter((dept) => {
       return (
@@ -49,10 +57,19 @@ export default function Departments() {
     if (!name.trim() || !canModify) return
     setBusy(true)
     try {
+      const payload = {
+        name, code, description,
+        commissionEnabled,
+        commissionRate: Number(commissionRate) || 0,
+        targetAmount: Number(targetAmount) || 0,
+        requireTargetForCommission: requireTarget,
+        overTargetCommissionEnabled: overTargetEnabled,
+        overTargetCommissionRate: Number(overTargetRate) || 0,
+      }
       if (editingId) {
-        await updateDepartment(editingId, { name, code, description })
+        await updateDepartment(editingId, payload)
       } else {
-        await createDepartment({ name, code, description })
+        await createDepartment(payload)
       }
       resetForm()
     } catch (err) {
@@ -67,6 +84,12 @@ export default function Departments() {
     setCode('')
     setDescription('')
     setEditingId(null)
+    setCommissionEnabled(false)
+    setCommissionRate('')
+    setTargetAmount('')
+    setRequireTarget(false)
+    setOverTargetEnabled(false)
+    setOverTargetRate('')
   }
 
   function startEdit(dept) {
@@ -74,6 +97,12 @@ export default function Departments() {
     setName(dept.name || '')
     setCode(dept.code || '')
     setDescription(dept.description || '')
+    setCommissionEnabled(Boolean(dept.commissionEnabled))
+    setCommissionRate(dept.commissionRate || '')
+    setTargetAmount(dept.targetAmount || '')
+    setRequireTarget(Boolean(dept.requireTargetForCommission))
+    setOverTargetEnabled(Boolean(dept.overTargetCommissionEnabled))
+    setOverTargetRate(dept.overTargetCommissionRate || '')
   }
 
   async function handleToggleActive(dept) {
@@ -159,6 +188,88 @@ export default function Departments() {
                 onChange={(e) => setDescription(e.target.value)}
               />
             </Field>
+
+            {/* إعدادات العمولة */}
+            <div className="rounded-2xl border border-sky-200 bg-sky-50/40 p-4 space-y-4">
+              <label className="flex items-start gap-3 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={commissionEnabled}
+                  onChange={(e) => setCommissionEnabled(e.target.checked)}
+                  className="mt-0.5 h-4 w-4 accent-sky-600 rounded"
+                />
+                <span>
+                  <span className="block text-sm font-bold text-sky-950">{t('departments.commissionEnabled')}</span>
+                  <span className="mt-0.5 block text-xs text-slate-500">{t('departments.commissionEnabledHint')}</span>
+                </span>
+              </label>
+
+              {commissionEnabled && (
+                <div className="space-y-4 pt-3 border-t border-sky-200/60">
+                  <div className="grid gap-4 sm:grid-cols-2">
+                    <Field label={t('departments.commissionRate')}>
+                      <Input
+                        numeric
+                        placeholder="15"
+                        value={commissionRate}
+                        onChange={(e) => setCommissionRate(e.target.value)}
+                      />
+                    </Field>
+                    <Field label={t('departments.targetAmount')}>
+                      <Input
+                        numeric
+                        placeholder="50000"
+                        value={targetAmount}
+                        onChange={(e) => setTargetAmount(e.target.value)}
+                      />
+                    </Field>
+                  </div>
+
+                  {Number(targetAmount) > 0 && (
+                    <div className="space-y-3">
+                      <label className="flex items-start gap-3 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={requireTarget}
+                          onChange={(e) => setRequireTarget(e.target.checked)}
+                          className="mt-0.5 h-4 w-4 accent-sky-600 rounded"
+                        />
+                        <span>
+                          <span className="block text-sm font-semibold text-slate-800">{t('departments.requireTarget')}</span>
+                          <span className="mt-0.5 block text-xs text-slate-500">{t('departments.requireTargetHint')}</span>
+                        </span>
+                      </label>
+
+                      <label className="flex items-start gap-3 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={overTargetEnabled}
+                          onChange={(e) => setOverTargetEnabled(e.target.checked)}
+                          className="mt-0.5 h-4 w-4 accent-sky-600 rounded"
+                        />
+                        <span>
+                          <span className="block text-sm font-semibold text-slate-800">{t('departments.overTargetEnable')}</span>
+                          <span className="mt-0.5 block text-xs text-slate-500">{t('departments.overTargetHint')}</span>
+                        </span>
+                      </label>
+
+                      {overTargetEnabled && (
+                        <div className="sm:w-1/2">
+                          <Field label={t('departments.overTargetRate')}>
+                            <Input
+                              numeric
+                              placeholder="10"
+                              value={overTargetRate}
+                              onChange={(e) => setOverTargetRate(e.target.value)}
+                            />
+                          </Field>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
           </form>
         </div>
       )}
@@ -180,6 +291,7 @@ export default function Departments() {
                 <Th>{t('departments.name')}</Th>
                 <Th>{t('departments.code')}</Th>
                 <Th>{t('departments.description')}</Th>
+                <Th>نظام العمولة</Th>
                 <Th>{t('departments.status')}</Th>
                 {canModify && <Th className="text-end">{t('departments.actions')}</Th>}
               </tr>
@@ -187,7 +299,7 @@ export default function Departments() {
             <tbody className="divide-y divide-slate-100">
               {filteredDepartments.length === 0 ? (
                 <tr>
-                  <Td colSpan={canModify ? 5 : 4} className="p-8 text-center text-slate-500">
+                  <Td colSpan={canModify ? 6 : 5} className="p-8 text-center text-slate-500">
                     {t('departments.empty')}
                   </Td>
                 </tr>
@@ -199,6 +311,18 @@ export default function Departments() {
                       <Td className="font-bold text-slate-900">{dept.name}</Td>
                       <Td className="font-mono text-xs text-slate-600">{dept.code || '-'}</Td>
                       <Td className="text-xs text-slate-500">{dept.description || '-'}</Td>
+                      <Td>
+                        {dept.commissionEnabled ? (
+                          <div className="text-xs space-y-0.5">
+                            <span className="font-bold text-sky-800">{dept.commissionRate || 0}% عمولة</span>
+                            {Number(dept.targetAmount) > 0 && (
+                              <span className="block text-slate-500 font-mono">تارجت: {Number(dept.targetAmount).toLocaleString()}</span>
+                            )}
+                          </div>
+                        ) : (
+                          <span className="text-xs text-slate-400">بدون عمولة</span>
+                        )}
+                      </Td>
                       <Td>
                         <Badge variant={isActive ? 'emerald' : 'neutral'}>
                           {isActive ? t('departments.activeTag') : t('departments.disabledTag')}

@@ -13,12 +13,13 @@ import {
 import { getFirestore } from 'firebase/firestore'
 
 const firebaseConfig = {
-  apiKey: 'AIzaSyCb1BmZI6H7rw4fPO72yNJBQHtsfpzwr8M',
-  authDomain: 'iyora-eg.firebaseapp.com',
-  projectId: 'iyora-eg',
-  storageBucket: 'iyora-eg.firebasestorage.app',
-  messagingSenderId: '1064818599797',
-  appId: '1:1064818599797:web:90b4742b1a38763dcd953c',
+  apiKey: "AIzaSyBnjBnE0mPyko4ZnLNOXSAawYnn1s9tU1U",
+  authDomain: "fir-media-app-815c9.firebaseapp.com",
+  projectId: "fir-media-app-815c9",
+  storageBucket: "fir-media-app-815c9.firebasestorage.app",
+  messagingSenderId: "527669988885",
+  appId: "1:527669988885:web:629defa95dee894f97881c",
+  measurementId: "G-28QPBYKRQ9"
 }
 
 const DEFAULT_ACCOUNTS = [
@@ -97,7 +98,7 @@ async function main() {
 
   console.log('\n🧹 بدء تنظيف وتصفير النظام بالكامل…\n')
 
-  // 1. Payments subcollections
+  // 1. Payments & applications subcollections
   try {
     const paySnap = await getDocs(collectionGroup(db, 'payments'))
     for (const p of paySnap.docs) await deleteDoc(p.ref)
@@ -106,13 +107,26 @@ async function main() {
     console.warn('  ! payments error:', e.message)
   }
 
+  try {
+    const appSnap = await getDocs(collectionGroup(db, 'applications'))
+    for (const a of appSnap.docs) await deleteDoc(a.ref)
+    if (appSnap.size > 0) console.log(`  − applications: حذف ${appSnap.size}`)
+  } catch (e) {
+    console.warn('  ! applications error:', e.message)
+  }
+
   // 2. Collections to clear completely
   const collections = [
-    'invoices', 'clients', 'employees', 'employeeEntries', 'vendors', 'assets',
-    'assetUsage', 'assetLocations', 'jobCosts', 'expenses', 'expenseCategories',
+    'invoices', 'purchaseInvoices', 'purchaseReturns', 'supplierCreditNotes',
+    'vendorAdvances', 'vendorPayments', 'vendorAdvanceApplications',
+    'accountingTransactions', 'journalEntries', 'clients', 'employees',
+    'employeeEntries', 'employeeDeductions', 'employeeAllowances',
+    'attendance', 'attendanceSettings', 'payroll', 'payrollRuns', 'payrollItems',
+    'vendors', 'supplierPayables', 'assets', 'assetUsage', 'assetLocations',
+    'assetCategories', 'jobCosts', 'expenses', 'expenseCategories',
     'services', 'serviceCategories', 'quotations', 'retainers', 'campaigns',
-    'maintenance', 'journalEntries', 'activityTypes', 'paymentMethods',
-    'assetCategories', 'vendorSpecialties', 'counters',
+    'maintenance', 'activityTypes', 'paymentMethods', 'vendorSpecialties',
+    'departments', 'positions', 'employeeTypes', 'counters',
   ]
 
   for (const col of collections) {
