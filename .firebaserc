@@ -1,6 +1,5 @@
 {
   "projects": {
-    "default": "iyora-help",
-    "old": "iyora-eg"
+    "default": "iyora-eg"
   }
 }

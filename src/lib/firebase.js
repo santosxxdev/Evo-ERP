@@ -5,13 +5,12 @@ import { getStorage } from 'firebase/storage'
 import { getFunctions } from 'firebase/functions'
 
 export const firebaseConfig = {
-  apiKey: "AIzaSyDVQx2fSTQw8qDqJVQfrxJwcAjRhaDmuVw",
-  authDomain: "iyora-help.firebaseapp.com",
-  projectId: "iyora-help",
-  storageBucket: "iyora-help.firebasestorage.app",
-  messagingSenderId: "377101352404",
-  appId: "1:377101352404:web:13f48483d107fc12b26a41",
-  measurementId: "G-7N94M60RZM"
+  apiKey: "AIzaSyCb1BmZI6H7rw4fPO72yNJBQHtsfpzwr8M",
+  authDomain: "iyora-eg.firebaseapp.com",
+  projectId: "iyora-eg",
+  storageBucket: "iyora-eg.firebasestorage.app",
+  messagingSenderId: "1064818599797",
+  appId: "1:1064818599797:web:90b4742b1a38763dcd953c"
 }
 
 export const app = initializeApp(firebaseConfig)
